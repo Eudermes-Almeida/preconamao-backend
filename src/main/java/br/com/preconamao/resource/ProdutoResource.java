@@ -7,6 +7,7 @@ import jakarta.ws.rs.GET;
 import jakarta.ws.rs.Path;
 import jakarta.ws.rs.PathParam;
 import jakarta.ws.rs.Produces;
+import jakarta.ws.rs.QueryParam;
 import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
 import org.eclipse.microprofile.openapi.annotations.Operation;
@@ -21,6 +22,31 @@ public class ProdutoResource {
 
     @Inject
     ProdutoService produtoService;
+
+    @GET
+    @Produces(MediaType.APPLICATION_JSON)
+    @Tag(name = "Busca Produto por Descrição", description = "Busca candidatos a partir da descrição falada pelo cliente")
+    @APIResponses(value = {
+            @APIResponse(responseCode = "200", description = "Lista de candidatos (vazia se nada parecido foi encontrado)", content = @Content(schema = @Schema(implementation = ProdutoDTO.class))),
+            @APIResponse(responseCode = "400", description = "Descrição não informada"),
+            @APIResponse(responseCode = "500", description = "Erro interno do servidor"),
+    })
+    @Operation(summary = "Busca produtos por descrição", description = "Recebe o texto reconhecido por voz e retorna até 5 produtos com descrição parecida, do mais para o menos similar.")
+    public Response buscaProdutosPorDescricao(@QueryParam("descricao") String descricao) {
+        try {
+            if (descricao == null || descricao.trim().isEmpty()) {
+                return Response.status(Response.Status.BAD_REQUEST)
+                        .entity("A descrição é obrigatória")
+                        .build();
+            }
+
+            return Response.ok(produtoService.buscaPorDescricao(descricao)).build();
+        } catch (Exception e) {
+            return Response.status(Response.Status.INTERNAL_SERVER_ERROR)
+                    .entity("Erro ao buscar produtos: " + e.getMessage())
+                    .build();
+        }
+    }
 
     @GET
     @Path("/{codigoBarras}")
