@@ -1,0 +1,15 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: preconamao-postgres
+    environment:
+      POSTGRES_DB: preconamao
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: preconamao123
+    ports:
+      - "5434:5432"
+    volumes:
+      - preconamao_postgres_data:/var/lib/postgresql/data
+
+volumes:
+  preconamao_postgres_data:
