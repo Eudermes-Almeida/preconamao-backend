@@ -1,6 +1,8 @@
 package br.com.preconamao.service;
 
+import br.com.preconamao.dto.LocalizacaoDTO;
 import br.com.preconamao.dto.ProdutoDTO;
+import br.com.preconamao.entity.LayoutPosicaoEntity;
 import br.com.preconamao.entity.ProdutoEntity;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -39,8 +41,11 @@ public class ProdutoService {
         String codigoTratado = codigoBarras.trim();
 
         try {
+            // LEFT JOIN FETCH: traz a localização (se houver) na mesma consulta, em vez de uma
+            // segunda ida ao banco só para o lazy load de layoutPosicao.
             ProdutoEntity produtoEntity = entityManager.createQuery(
-                            "SELECT p FROM ProdutoEntity p WHERE p.codigoBarras = :codigoBarras",
+                            "SELECT p FROM ProdutoEntity p LEFT JOIN FETCH p.layoutPosicao "
+                                    + "WHERE p.codigoBarras = :codigoBarras",
                             ProdutoEntity.class)
                     .setParameter("codigoBarras", codigoTratado)
                     .getSingleResult();
@@ -91,6 +96,20 @@ public class ProdutoService {
                 .codigoBarras(entity.getCodigoBarras())
                 .descricao(entity.getDescricao())
                 .precoCentavos(entity.getPrecoCentavos())
+                .localizacao(mapLocalizacao(entity.getLayoutPosicao()))
+                .build();
+    }
+
+    private LocalizacaoDTO mapLocalizacao(LayoutPosicaoEntity layoutPosicao) {
+        if (layoutPosicao == null) {
+            return null;
+        }
+
+        return LocalizacaoDTO.builder()
+                .nomeSetor(layoutPosicao.getNomeSetor())
+                .rua(layoutPosicao.getRua())
+                .quarteirao(layoutPosicao.getQuarteirao())
+                .lado(layoutPosicao.getLado())
                 .build();
     }
 }

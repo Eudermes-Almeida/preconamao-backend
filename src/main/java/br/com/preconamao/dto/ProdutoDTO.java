@@ -14,4 +14,7 @@ public class ProdutoDTO {
 
     private Integer precoCentavos;
 
+    // Nulo quando o produto ainda não tem posição mapeada no layout da loja.
+    private LocalizacaoDTO localizacao;
+
 }
