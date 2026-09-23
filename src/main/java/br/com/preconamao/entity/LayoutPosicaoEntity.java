@@ -29,9 +29,10 @@ public class LayoutPosicaoEntity {
     @Column(name = "rua", nullable = false)
     private Integer rua;
 
-    // Linha do layout (1 a 3, topo pra baixo).
-    @Column(name = "quarteirao", nullable = false)
-    private Integer quarteirao;
+    // Linha do layout, identificada por letra (A a C, topo pra baixo) — não número, pra não
+    // confundir com o número da rua ao ler o mapa.
+    @Column(name = "quarteirao", nullable = false, length = 1)
+    private String quarteirao;
 
     // ESQUERDA/DIREITA (face da gôndola) ou CENTRO (balcão de atendimento: padaria,
     // açougue, farmácia/drogaria — sem gôndola de dois lados).

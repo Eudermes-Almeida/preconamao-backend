@@ -14,7 +14,8 @@ public class LocalizacaoDTO {
 
     private Integer rua;
 
-    private Integer quarteirao;
+    // Letra (A a C), não número — ver LayoutPosicaoEntity.
+    private String quarteirao;
 
     // ESQUERDA, DIREITA ou CENTRO (balcão de atendimento, sem lado).
     private String lado;
