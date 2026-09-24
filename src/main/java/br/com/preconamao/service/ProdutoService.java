@@ -97,6 +97,7 @@ public class ProdutoService {
                 .descricao(entity.getDescricao())
                 .precoCentavos(entity.getPrecoCentavos())
                 .localizacao(mapLocalizacao(entity.getLayoutPosicao()))
+                .preListaItemId(entity.getPreListaItemId())
                 .build();
     }
 

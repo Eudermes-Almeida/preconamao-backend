@@ -42,4 +42,10 @@ public class ProdutoEntity {
     @JoinColumn(name = "layout_id")
     private LayoutPosicaoEntity layoutPosicao;
 
+    // Item da pré-lista de compras que este produto atende (ex.: "DETERGENTE YPE NEUTRO" ->
+    // Detergente); NULL quando nenhum termo casou. Resolvido no banco pela função
+    // vincular_produtos_pre_lista() (scripts/013_pre_lista.sql), nunca gravado pela aplicação.
+    @Column(name = "pre_lista_item_id")
+    private Long preListaItemId;
+
 }
