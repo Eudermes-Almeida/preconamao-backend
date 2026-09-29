@@ -31,4 +31,13 @@ public class ProdutoDTO {
     // valor total dela (o que o caixa cobra).
     private boolean etiquetaBalanca;
 
+    // false = o app não pode garantir que o preço está atualizado (agente da loja sem sinal ou
+    // arquivo da loja diferente do aplicado): o app esconde o preço. Etiqueta de balança é sempre
+    // true (o valor vem impresso).
+    private boolean precoConfiavel;
+
+    // Quando o preço foi conferido pela última vez (sinal de vida do agente, ISO-8601); null se a
+    // proteção estiver desligada ou o preço não for confiável.
+    private String precoConferidoEm;
+
 }

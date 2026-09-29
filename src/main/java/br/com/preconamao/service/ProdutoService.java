@@ -39,13 +39,38 @@ public class ProdutoService {
     @Inject
     EtiquetaBalanca etiquetaBalanca;
 
+    @Inject
+    LojaService lojaService;
+
+    // Limite de códigos por chamada do lote (ofertas do app e revalidação do carrinho).
+    public static final int MAX_LOTE = 100;
+
     // Código exato primeiro (inclui os EAN "2..." de uso interno que não são de balança); só sem
     // resultado é que o código é tratado como etiqueta de balança.
     @Transactional
     public Optional<ProdutoDTO> buscaPorCodigoBarras(String codigoBarras) {
+        return buscaPorCodigoBarras(codigoBarras, lojaService.situacaoPreco());
+    }
+
+    // Ofertas do app e revalidação do carrinho: os códigos não encontrados (ou inativos) ficam de
+    // fora da lista.
+    @Transactional
+    public List<ProdutoDTO> buscaPorCodigos(List<String> codigos) {
+        LojaService.SituacaoPreco situacao = lojaService.situacaoPreco();
+        return codigos.stream()
+                .map(String::trim)
+                .filter(codigo -> !codigo.isEmpty())
+                .distinct()
+                .limit(MAX_LOTE)
+                .map(codigo -> buscaPorCodigoBarras(codigo, situacao))
+                .flatMap(Optional::stream)
+                .toList();
+    }
+
+    private Optional<ProdutoDTO> buscaPorCodigoBarras(String codigoBarras, LojaService.SituacaoPreco situacao) {
         String codigoTratado = codigoBarras.trim();
 
-        Optional<ProdutoDTO> exato = buscaEntidade(codigoTratado).map(this::mapToDTO);
+        Optional<ProdutoDTO> exato = buscaEntidade(codigoTratado).map(produto -> mapToDTO(produto, situacao));
         if (exato.isPresent()) {
             return exato;
         }
@@ -61,7 +86,7 @@ public class ProdutoService {
             // segunda ida ao banco só para o lazy load de layoutPosicao.
             return Optional.of(entityManager.createQuery(
                             "SELECT p FROM ProdutoEntity p LEFT JOIN FETCH p.layoutPosicao "
-                                    + "WHERE p.codigoBarras = :codigoBarras",
+                                    + "WHERE p.codigoBarras = :codigoBarras AND p.ativo = true",
                             ProdutoEntity.class)
                     .setParameter("codigoBarras", codigoBarras)
                     .getSingleResult());
@@ -84,7 +109,7 @@ public class ProdutoService {
 
         List<ProdutoEntity> produtos = entityManager.createNativeQuery(
                         "SELECT p.* FROM produtos p "
-                                + "WHERE word_similarity(unaccent(:texto), unaccent(lower(p.descricao))) >= :limiar "
+                                + "WHERE p.ativo AND word_similarity(unaccent(:texto), unaccent(lower(p.descricao))) >= :limiar "
                                 + "ORDER BY word_similarity(unaccent(:texto), unaccent(lower(p.descricao))) DESC, p.descricao "
                                 + "LIMIT :limite",
                         ProdutoEntity.class)
@@ -93,7 +118,8 @@ public class ProdutoService {
                 .setParameter("limite", MAX_CANDIDATOS)
                 .getResultList();
 
-        return produtos.stream().map(this::mapToDTO).toList();
+        LojaService.SituacaoPreco situacao = lojaService.situacaoPreco();
+        return produtos.stream().map(produto -> mapToDTO(produto, situacao)).toList();
     }
 
     private String removePalavrasDeEnchimento(String texto) {
@@ -105,7 +131,7 @@ public class ProdutoService {
                 .collect(Collectors.joining(" "));
     }
 
-    private ProdutoDTO mapToDTO(ProdutoEntity entity) {
+    private ProdutoDTO mapToDTO(ProdutoEntity entity, LojaService.SituacaoPreco situacao) {
         return ProdutoDTO.builder()
                 .codigoBarras(entity.getCodigoBarras())
                 .descricao(entity.getDescricao())
@@ -114,6 +140,8 @@ public class ProdutoService {
                 .preListaItemId(entity.getPreListaItemId())
                 .vendidoPorKg(entity.isVendidoPorKg())
                 .precoKgCentavos(entity.isVendidoPorKg() ? entity.getPrecoCentavos() : null)
+                .precoConfiavel(situacao.confiavel())
+                .precoConferidoEm(situacao.conferidoEm() == null ? null : situacao.conferidoEm().toString())
                 .build();
     }
 
@@ -121,7 +149,8 @@ public class ProdutoService {
     // valor somam quantidade no carrinho, pacotes diferentes ficam em linhas separadas) e preço
     // = total impresso, que é o que o caixa cobra.
     private ProdutoDTO mapEtiquetaToDTO(ProdutoEntity entity, String codigoEtiqueta, int valorCentavos) {
-        ProdutoDTO dto = mapToDTO(entity);
+        // O valor vem impresso na etiqueta: vale mesmo com a loja sem sinal de vida.
+        ProdutoDTO dto = mapToDTO(entity, new LojaService.SituacaoPreco(true, null));
         dto.setCodigoBarras(codigoEtiqueta);
         dto.setPrecoCentavos(valorCentavos);
         dto.setEtiquetaBalanca(true);

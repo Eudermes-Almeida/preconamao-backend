@@ -12,6 +12,8 @@ import jakarta.persistence.Table;
 import jakarta.persistence.UniqueConstraint;
 import lombok.*;
 
+import java.time.OffsetDateTime;
+
 @Entity
 @Table(name = "produtos", uniqueConstraints = @UniqueConstraint(columnNames = "codigo_barras"))
 @Data
@@ -52,5 +54,18 @@ public class ProdutoEntity {
     // que vem na etiqueta (ex.: "2984") e precoCentavos é o preço do quilo.
     @Column(name = "vendido_por_kg", nullable = false)
     private boolean vendidoPorKg;
+
+    // Sumiu do último PRICETAB: some das buscas, mas não é apagado (volta se reaparecer).
+    // Ver aplicar_carga_pricetab() em scripts/016_carga_automatica.sql.
+    @Column(name = "ativo", nullable = false)
+    private boolean ativo;
+
+    // Localização corrigida à mão: a carga não recalcula layout_id.
+    @Column(name = "layout_manual", nullable = false)
+    private boolean layoutManual;
+
+    // Última mudança de preço, descrição ou situação feita por uma carga.
+    @Column(name = "atualizado_em", nullable = false)
+    private OffsetDateTime atualizadoEm;
 
 }

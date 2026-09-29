@@ -17,6 +17,8 @@ import org.eclipse.microprofile.openapi.annotations.responses.APIResponse;
 import org.eclipse.microprofile.openapi.annotations.responses.APIResponses;
 import org.eclipse.microprofile.openapi.annotations.tags.Tag;
 
+import java.util.Arrays;
+
 @Path("/produtos")
 public class ProdutoResource {
 
@@ -41,6 +43,32 @@ public class ProdutoResource {
             }
 
             return Response.ok(produtoService.buscaPorDescricao(descricao)).build();
+        } catch (Exception e) {
+            return Response.status(Response.Status.INTERNAL_SERVER_ERROR)
+                    .entity("Erro ao buscar produtos: " + e.getMessage())
+                    .build();
+        }
+    }
+
+    @GET
+    @Path("/lote")
+    @Produces(MediaType.APPLICATION_JSON)
+    @Tag(name = "Busca Produtos em Lote", description = "Preço atual de vários produtos numa chamada só")
+    @APIResponses(value = {
+            @APIResponse(responseCode = "200", description = "Produtos encontrados (os não encontrados ou inativos ficam de fora)", content = @Content(schema = @Schema(implementation = ProdutoDTO.class))),
+            @APIResponse(responseCode = "400", description = "Nenhum código informado"),
+            @APIResponse(responseCode = "500", description = "Erro interno do servidor"),
+    })
+    @Operation(summary = "Busca produtos por lista de códigos", description = "Recebe até 100 códigos separados por vírgula (ofertas do app, revalidação do carrinho) e devolve os produtos com o preço atual.")
+    public Response buscaProdutosPorCodigos(@QueryParam("codigos") String codigos) {
+        try {
+            if (codigos == null || codigos.isBlank()) {
+                return Response.status(Response.Status.BAD_REQUEST)
+                        .entity("Informe os códigos separados por vírgula")
+                        .build();
+            }
+
+            return Response.ok(produtoService.buscaPorCodigos(Arrays.asList(codigos.split(",")))).build();
         } catch (Exception e) {
             return Response.status(Response.Status.INTERNAL_SERVER_ERROR)
                     .entity("Erro ao buscar produtos: " + e.getMessage())
