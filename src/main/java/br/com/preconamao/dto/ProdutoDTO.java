@@ -20,4 +20,15 @@ public class ProdutoDTO {
     // Item da pré-lista que o produto risca ao entrar no carrinho; nulo se não atende nenhum.
     private Long preListaItemId;
 
+    // Produto de balança. Buscado pelo nome ou pelo código interno, precoCentavos é o preço do
+    // quilo (não dá para pôr no carrinho sem pesar); lido da etiqueta, ver etiquetaBalanca.
+    private boolean vendidoPorKg;
+
+    // Preço do quilo; nulo em produto que não é de balança.
+    private Integer precoKgCentavos;
+
+    // Veio da etiqueta impressa pela balança: codigoBarras é o da etiqueta e precoCentavos é o
+    // valor total dela (o que o caixa cobra).
+    private boolean etiquetaBalanca;
+
 }

@@ -36,21 +36,35 @@ public class ProdutoService {
     @Inject
     EntityManager entityManager;
 
+    @Inject
+    EtiquetaBalanca etiquetaBalanca;
+
+    // Código exato primeiro (inclui os EAN "2..." de uso interno que não são de balança); só sem
+    // resultado é que o código é tratado como etiqueta de balança.
     @Transactional
     public Optional<ProdutoDTO> buscaPorCodigoBarras(String codigoBarras) {
         String codigoTratado = codigoBarras.trim();
 
+        Optional<ProdutoDTO> exato = buscaEntidade(codigoTratado).map(this::mapToDTO);
+        if (exato.isPresent()) {
+            return exato;
+        }
+        return etiquetaBalanca.decodificar(codigoTratado)
+                .flatMap(leitura -> buscaEntidade(leitura.codigoProduto())
+                        .filter(ProdutoEntity::isVendidoPorKg)
+                        .map(produto -> mapEtiquetaToDTO(produto, codigoTratado, leitura.valorCentavos())));
+    }
+
+    private Optional<ProdutoEntity> buscaEntidade(String codigoBarras) {
         try {
             // LEFT JOIN FETCH: traz a localização (se houver) na mesma consulta, em vez de uma
             // segunda ida ao banco só para o lazy load de layoutPosicao.
-            ProdutoEntity produtoEntity = entityManager.createQuery(
+            return Optional.of(entityManager.createQuery(
                             "SELECT p FROM ProdutoEntity p LEFT JOIN FETCH p.layoutPosicao "
                                     + "WHERE p.codigoBarras = :codigoBarras",
                             ProdutoEntity.class)
-                    .setParameter("codigoBarras", codigoTratado)
-                    .getSingleResult();
-
-            return Optional.of(mapToDTO(produtoEntity));
+                    .setParameter("codigoBarras", codigoBarras)
+                    .getSingleResult());
         } catch (NoResultException e) {
             return Optional.empty();
         }
@@ -98,7 +112,20 @@ public class ProdutoService {
                 .precoCentavos(entity.getPrecoCentavos())
                 .localizacao(mapLocalizacao(entity.getLayoutPosicao()))
                 .preListaItemId(entity.getPreListaItemId())
+                .vendidoPorKg(entity.isVendidoPorKg())
+                .precoKgCentavos(entity.isVendidoPorKg() ? entity.getPrecoCentavos() : null)
                 .build();
+    }
+
+    // Cada etiqueta vira um "produto" próprio: código da etiqueta (dois pacotes com o mesmo
+    // valor somam quantidade no carrinho, pacotes diferentes ficam em linhas separadas) e preço
+    // = total impresso, que é o que o caixa cobra.
+    private ProdutoDTO mapEtiquetaToDTO(ProdutoEntity entity, String codigoEtiqueta, int valorCentavos) {
+        ProdutoDTO dto = mapToDTO(entity);
+        dto.setCodigoBarras(codigoEtiqueta);
+        dto.setPrecoCentavos(valorCentavos);
+        dto.setEtiquetaBalanca(true);
+        return dto;
     }
 
     private LocalizacaoDTO mapLocalizacao(LayoutPosicaoEntity layoutPosicao) {

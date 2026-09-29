@@ -48,4 +48,9 @@ public class ProdutoEntity {
     @Column(name = "pre_lista_item_id")
     private Long preListaItemId;
 
+    // Produto de balança (scripts/015_produtos_pesaveis.sql): codigoBarras é o código interno
+    // que vem na etiqueta (ex.: "2984") e precoCentavos é o preço do quilo.
+    @Column(name = "vendido_por_kg", nullable = false)
+    private boolean vendidoPorKg;
+
 }
