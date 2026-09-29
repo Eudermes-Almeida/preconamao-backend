@@ -51,4 +51,8 @@ public class LojaEntity {
     @Column(name = "alerta_enviado_em")
     private OffsetDateTime alertaEnviadoEm;
 
+    // SHA-256 da chave de leitura do relatório de mídias (scripts/018); null = relatório fechado.
+    @Column(name = "chave_relatorio_hash", length = 64)
+    private String chaveRelatorioHash;
+
 }

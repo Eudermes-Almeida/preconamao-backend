@@ -48,6 +48,22 @@ public class LojaService {
         }
     }
 
+    // Chave do cabeçalho X-Chave-Relatorio (aba administrativa) -> loja. Separada da chave do agente.
+    @Transactional
+    public Optional<LojaEntity> autenticarRelatorio(String chave) {
+        if (chave == null || chave.isBlank()) {
+            return Optional.empty();
+        }
+        try {
+            return Optional.of(entityManager.createQuery(
+                            "SELECT l FROM LojaEntity l WHERE l.chaveRelatorioHash = :hash", LojaEntity.class)
+                    .setParameter("hash", sha256(chave.trim().getBytes(StandardCharsets.UTF_8)))
+                    .getSingleResult());
+        } catch (NoResultException e) {
+            return Optional.empty();
+        }
+    }
+
     @Transactional
     public SituacaoPreco situacaoPreco() {
         LojaEntity loja = entityManager.find(LojaEntity.class, lojaPadraoId);
