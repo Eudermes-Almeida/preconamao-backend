@@ -5,6 +5,7 @@ import br.com.preconamao.entity.LojaEntity;
 import br.com.preconamao.service.EventoMidiaService;
 import br.com.preconamao.service.LojaService;
 import jakarta.inject.Inject;
+import jakarta.ws.rs.DELETE;
 import jakarta.ws.rs.DefaultValue;
 import jakarta.ws.rs.GET;
 import jakarta.ws.rs.HeaderParam;
@@ -20,6 +21,7 @@ import org.eclipse.microprofile.openapi.annotations.responses.APIResponse;
 import org.eclipse.microprofile.openapi.annotations.responses.APIResponses;
 import org.eclipse.microprofile.openapi.annotations.tags.Tag;
 
+import java.util.Map;
 import java.util.Optional;
 
 // Relatórios da aba administrativa (/admin do app). Exige a chave de relatório da loja no
@@ -59,6 +61,29 @@ public class RelatorioResource {
         } catch (Exception e) {
             return Response.status(Response.Status.INTERNAL_SERVER_ERROR)
                     .entity("Erro no relatório de mídias: " + e.getMessage())
+                    .build();
+        }
+    }
+
+    // Fase de testes: zera o relatório da loja (todos os períodos). Não há como desfazer, a não ser
+    // por backup do banco.
+    @DELETE
+    @Path("/midias")
+    @APIResponses(value = {
+            @APIResponse(responseCode = "200", description = "Eventos apagados (quantidade no corpo)"),
+            @APIResponse(responseCode = "401", description = "Chave de relatório ausente ou inválida"),
+    })
+    @Operation(summary = "Apaga todos os eventos de mídia da loja", description = "Usado pelo botão \"Limpar dados\" do painel administrativo durante os testes.")
+    public Response limpaMidias(@HeaderParam(CABECALHO_CHAVE) String chave) {
+        try {
+            Optional<LojaEntity> loja = lojaService.autenticarRelatorio(chave);
+            if (loja.isEmpty()) {
+                return Response.status(Response.Status.UNAUTHORIZED).entity("Chave de relatório ausente ou inválida").build();
+            }
+            return Response.ok(Map.of("apagados", eventoMidiaService.limpar(loja.get().getId()))).build();
+        } catch (Exception e) {
+            return Response.status(Response.Status.INTERNAL_SERVER_ERROR)
+                    .entity("Erro ao limpar o relatório de mídias: " + e.getMessage())
                     .build();
         }
     }

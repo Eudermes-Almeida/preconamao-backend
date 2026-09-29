@@ -207,6 +207,16 @@ public class EventoMidiaService {
                 .build();
     }
 
+    // Botão "Limpar dados" do painel (fase de testes): apaga todos os eventos da loja.
+    @Transactional
+    public int limpar(Integer lojaId) {
+        int apagados = entityManager.createQuery("DELETE FROM EventoMidiaEntity e WHERE e.lojaId = :loja")
+                .setParameter("loja", lojaId)
+                .executeUpdate();
+        Log.infof("Relatório de mídias da loja %d limpo: %d eventos apagados.", lojaId, apagados);
+        return apagados;
+    }
+
     private RelatorioOfertaDTO linhaVazia(String codigoBarras) {
         return RelatorioOfertaDTO.builder().codigoBarras(codigoBarras).build();
     }
