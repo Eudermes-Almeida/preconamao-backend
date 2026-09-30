@@ -29,4 +29,6 @@ public class RelatorioMidiasDTO {
 
     private RelatorioInstalacoesDTO instalacoes;
 
+    private RelatorioFamiliaDTO familia;
+
 }

@@ -61,6 +61,9 @@ public class EventoMidiaService {
     @Inject
     EntityManager entityManager;
 
+    @Inject
+    FamiliaService familiaService;
+
     public static boolean periodoValido(String periodo) {
         return PERIODOS.containsKey(periodo);
     }
@@ -237,6 +240,7 @@ public class EventoMidiaService {
                         .descricao(descricoes.get(e.getCodigoBarras()))
                         .build()).toList())
                 .instalacoes(instalacoes(lojaId, de))
+                .familia(familiaService.relatorio(lojaId, de))
                 .build();
     }
 
