@@ -70,10 +70,10 @@ public class RelatorioResource {
     @DELETE
     @Path("/midias")
     @APIResponses(value = {
-            @APIResponse(responseCode = "200", description = "Eventos apagados (quantidade no corpo)"),
+            @APIResponse(responseCode = "200", description = "Eventos e instalações apagados (quantidade no corpo)"),
             @APIResponse(responseCode = "401", description = "Chave de relatório ausente ou inválida"),
     })
-    @Operation(summary = "Apaga todos os eventos de mídia da loja", description = "Usado pelo botão \"Limpar dados\" do painel administrativo durante os testes.")
+    @Operation(summary = "Apaga todos os eventos de mídia e instalações do app da loja", description = "Usado pelo botão \"Limpar dados\" do painel administrativo durante os testes.")
     public Response limpaMidias(@HeaderParam(CABECALHO_CHAVE) String chave) {
         try {
             Optional<LojaEntity> loja = lojaService.autenticarRelatorio(chave);

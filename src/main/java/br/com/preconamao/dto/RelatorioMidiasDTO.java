@@ -27,4 +27,6 @@ public class RelatorioMidiasDTO {
 
     private List<EventoRecenteDTO> recentes;
 
+    private RelatorioInstalacoesDTO instalacoes;
+
 }

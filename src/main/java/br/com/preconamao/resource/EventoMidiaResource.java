@@ -1,5 +1,6 @@
 package br.com.preconamao.resource;
 
+import br.com.preconamao.dto.InstalacaoAppDTO;
 import br.com.preconamao.dto.LoteEventosDTO;
 import br.com.preconamao.service.EventoMidiaService;
 import jakarta.inject.Inject;
@@ -46,6 +47,30 @@ public class EventoMidiaResource {
         } catch (Exception e) {
             return Response.status(Response.Status.INTERNAL_SERVER_ERROR)
                     .entity("Erro ao registrar eventos: " + e.getMessage())
+                    .build();
+        }
+    }
+
+    @POST
+    @Path("/instalacao")
+    @Consumes(MediaType.APPLICATION_JSON)
+    @APIResponses(value = {
+            @APIResponse(responseCode = "204", description = "Instalação registrada (ou já registrada antes para o aparelho)"),
+            @APIResponse(responseCode = "400", description = "Aparelho, origem ou plataforma inválidos"),
+    })
+    @Operation(summary = "Registra o app instalado na tela inicial", description = "Uma vez por aparelho. Origens: BOTAO, NAVEGADOR. Plataformas: ANDROID, IOS, OUTRA.")
+    public Response recebeInstalacao(InstalacaoAppDTO instalacao) {
+        if (instalacao == null) {
+            return Response.status(Response.Status.BAD_REQUEST).entity("Corpo vazio").build();
+        }
+        try {
+            if (!eventoMidiaService.registrarInstalacao(instalacao)) {
+                return Response.status(Response.Status.BAD_REQUEST).entity("Aparelho, origem ou plataforma inválidos").build();
+            }
+            return Response.noContent().build();
+        } catch (Exception e) {
+            return Response.status(Response.Status.INTERNAL_SERVER_ERROR)
+                    .entity("Erro ao registrar instalação: " + e.getMessage())
                     .build();
         }
     }

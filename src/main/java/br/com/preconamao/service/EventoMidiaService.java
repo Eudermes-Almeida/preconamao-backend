@@ -2,10 +2,13 @@ package br.com.preconamao.service;
 
 import br.com.preconamao.dto.EventoMidiaDTO;
 import br.com.preconamao.dto.EventoRecenteDTO;
+import br.com.preconamao.dto.InstalacaoAppDTO;
 import br.com.preconamao.dto.LoteEventosDTO;
+import br.com.preconamao.dto.RelatorioInstalacoesDTO;
 import br.com.preconamao.dto.RelatorioMidiasDTO;
 import br.com.preconamao.dto.RelatorioOfertaDTO;
 import br.com.preconamao.entity.EventoMidiaEntity;
+import br.com.preconamao.entity.InstalacaoAppEntity;
 import io.quarkus.logging.Log;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -26,7 +29,8 @@ import java.util.UUID;
 import java.util.regex.Pattern;
 
 // Eventos das ofertas enviados pelo app (POST /eventos) e o relatório da aba administrativa
-// (GET /relatorios/midias). Ver scripts/018_eventos_midia.sql.
+// (GET /relatorios/midias), mais as instalações do app (POST /eventos/instalacao). Ver
+// scripts/018_eventos_midia.sql e 019_instalacao_app.sql.
 @ApplicationScoped
 public class EventoMidiaService {
 
@@ -45,6 +49,8 @@ public class EventoMidiaService {
             EventoMidiaEntity.DESFAVORITAR, EventoMidiaEntity.LOCALIZAR, EventoMidiaEntity.PRE_LISTA);
     private static final Set<String> ORIGENS = Set.of(EventoMidiaEntity.ANUNCIO, EventoMidiaEntity.TELA_OFERTAS);
     private static final Pattern CODIGO = Pattern.compile("\\d{8,14}");
+    private static final Set<String> ORIGENS_INSTALACAO = Set.of(InstalacaoAppEntity.BOTAO, InstalacaoAppEntity.NAVEGADOR);
+    private static final Set<String> PLATAFORMAS = Set.of(InstalacaoAppEntity.ANDROID, InstalacaoAppEntity.IOS, InstalacaoAppEntity.OUTRA);
 
     // Períodos do filtro do painel: quantos dias contam, incluindo hoje.
     private static final Map<String, Integer> PERIODOS = Map.of("hoje", 1, "7dias", 7, "30dias", 30);
@@ -101,6 +107,32 @@ public class EventoMidiaService {
             gravados++;
         }
         return gravados;
+    }
+
+    // App instalado na tela inicial (POST /eventos/instalacao). Uma vez por aparelho: repetição é
+    // ignorada. Devolve false se o corpo for inválido.
+    @Transactional
+    public boolean registrarInstalacao(InstalacaoAppDTO instalacao) {
+        UUID aparelho = lerUuid(instalacao.getAparelhoId());
+        if (aparelho == null || !ORIGENS_INSTALACAO.contains(instalacao.getOrigem())
+                || !PLATAFORMAS.contains(instalacao.getPlataforma())) {
+            return false;
+        }
+        long jaRegistrado = entityManager.createQuery(
+                        "SELECT COUNT(i) FROM InstalacaoAppEntity i WHERE i.lojaId = :loja AND i.aparelhoId = :aparelho", Long.class)
+                .setParameter("loja", lojaPadraoId)
+                .setParameter("aparelho", aparelho)
+                .getSingleResult();
+        if (jaRegistrado == 0) {
+            entityManager.persist(InstalacaoAppEntity.builder()
+                    .lojaId(lojaPadraoId)
+                    .aparelhoId(aparelho)
+                    .origem(instalacao.getOrigem())
+                    .plataforma(instalacao.getPlataforma())
+                    .registradoEm(OffsetDateTime.now())
+                    .build());
+        }
+        return true;
     }
 
     // ------------------------------------------------------------------------------------------
@@ -204,17 +236,46 @@ public class EventoMidiaService {
                         .codigoBarras(e.getCodigoBarras())
                         .descricao(descricoes.get(e.getCodigoBarras()))
                         .build()).toList())
+                .instalacoes(instalacoes(lojaId, de))
                 .build();
     }
 
-    // Botão "Limpar dados" do painel (fase de testes): apaga todos os eventos da loja.
+    private RelatorioInstalacoesDTO instalacoes(Integer lojaId, OffsetDateTime de) {
+        RelatorioInstalacoesDTO resumo = new RelatorioInstalacoesDTO();
+        entityManager.createQuery(
+                        "SELECT i.origem, i.plataforma, COUNT(i) FROM InstalacaoAppEntity i "
+                                + "WHERE i.lojaId = :loja AND i.registradoEm >= :de GROUP BY i.origem, i.plataforma", Object[].class)
+                .setParameter("loja", lojaId)
+                .setParameter("de", de)
+                .getResultList()
+                .forEach(linha -> {
+                    long quantidade = (Long) linha[2];
+                    resumo.setTotal(resumo.getTotal() + quantidade);
+                    if (InstalacaoAppEntity.BOTAO.equals(linha[0])) {
+                        resumo.setBotao(resumo.getBotao() + quantidade);
+                    } else {
+                        resumo.setNavegador(resumo.getNavegador() + quantidade);
+                    }
+                    switch ((String) linha[1]) {
+                        case InstalacaoAppEntity.ANDROID -> resumo.setAndroid(resumo.getAndroid() + quantidade);
+                        case InstalacaoAppEntity.IOS -> resumo.setIos(resumo.getIos() + quantidade);
+                        default -> resumo.setOutras(resumo.getOutras() + quantidade);
+                    }
+                });
+        return resumo;
+    }
+
+    // Botão "Limpar dados" do painel (fase de testes): apaga todos os eventos e instalações da loja.
     @Transactional
     public int limpar(Integer lojaId) {
         int apagados = entityManager.createQuery("DELETE FROM EventoMidiaEntity e WHERE e.lojaId = :loja")
                 .setParameter("loja", lojaId)
                 .executeUpdate();
-        Log.infof("Relatório de mídias da loja %d limpo: %d eventos apagados.", lojaId, apagados);
-        return apagados;
+        int instalacoes = entityManager.createQuery("DELETE FROM InstalacaoAppEntity i WHERE i.lojaId = :loja")
+                .setParameter("loja", lojaId)
+                .executeUpdate();
+        Log.infof("Relatório de mídias da loja %d limpo: %d eventos e %d instalações apagados.", lojaId, apagados, instalacoes);
+        return apagados + instalacoes;
     }
 
     private RelatorioOfertaDTO linhaVazia(String codigoBarras) {
