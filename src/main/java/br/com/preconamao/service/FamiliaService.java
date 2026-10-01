@@ -2,11 +2,13 @@ package br.com.preconamao.service;
 
 import br.com.preconamao.dto.ConteudoListaDTO;
 import br.com.preconamao.dto.ConviteDTO;
+import br.com.preconamao.dto.InscricaoAvisoDTO;
 import br.com.preconamao.dto.FamiliaContatoDTO;
 import br.com.preconamao.dto.FamiliaEstadoDTO;
 import br.com.preconamao.dto.ListaRecebidaDTO;
 import br.com.preconamao.dto.ProdutoListaDTO;
 import br.com.preconamao.dto.RelatorioFamiliaDTO;
+import br.com.preconamao.entity.FamiliaAvisoInscricaoEntity;
 import br.com.preconamao.entity.FamiliaContatoEntity;
 import br.com.preconamao.entity.FamiliaConviteEntity;
 import br.com.preconamao.entity.FamiliaListaEntity;
@@ -44,6 +46,8 @@ public class FamiliaService {
     private static final int MAX_LINHAS_LISTA = 200;
     private static final int MAX_QUANTIDADE = 99;
     private static final int MAX_NOME = 30;
+    // Inscrições de aviso por membro (Chrome, app instalado, outro navegador...): as mais antigas saem.
+    private static final int MAX_INSCRICOES_AVISO = 5;
 
     // Sem 0/O, 1/I/L: o código também é digitado à mão.
     private static final String ALFABETO_CODIGO = "23456789ABCDEFGHJKMNPQRSTUVWXYZ";
@@ -61,6 +65,12 @@ public class FamiliaService {
 
     @Inject
     EntityManager entityManager;
+
+    @Inject
+    AvisoFamiliaService avisos;
+
+    @Inject
+    WebPushService webPush;
 
     // Erro de regra, com o status HTTP que o resource devolve e a mensagem que o app mostra.
     public static class FamiliaException extends RuntimeException {
@@ -239,6 +249,8 @@ public class FamiliaService {
         ligar(convite.getDeMembroId(), eu.getId(), convite.getApelidoConvidado(), agora);
         convite.setAceitoEm(agora);
         convite.setAceitoPorId(eu.getId());
+        avisos.avisar(convite.getDeMembroId(), convite.getApelidoConvidado() + " aceitou seu convite ✓",
+                "Agora vocês podem trocar listas de compras.", "familia-convite");
 
         FamiliaMembroEntity deQuem = entityManager.find(FamiliaMembroEntity.class, convite.getDeMembroId());
         return FamiliaContatoDTO.builder().id(deQuem.getId()).apelido(apelidoLimpo).nome(deQuem.getNome()).build();
@@ -337,6 +349,11 @@ public class FamiliaService {
                 .enviadaEm(agora)
                 .build();
         entityManager.persist(lista);
+
+        // No aviso, quem enviou aparece com o apelido que o destinatário deu a ele ("Esposa").
+        String deQuem = buscarContato(paraId, eu.getId()).map(FamiliaContatoEntity::getApelido).orElse(eu.getNome());
+        avisos.avisar(paraId, deQuem + " enviou " + linhas + (linhas == 1 ? " item" : " itens"),
+                "Toque para ver e juntar à sua pré-lista.", "familia-lista");
         return lista.getId();
     }
 
@@ -397,6 +414,62 @@ public class FamiliaService {
                 .setParameter("contato", contatoId)
                 .getResultStream()
                 .findFirst();
+    }
+
+    // ------------------------------------------------------------------------------------------
+    // Avisos no celular (Web Push), ver AvisoFamiliaService
+    // ------------------------------------------------------------------------------------------
+
+    // A mesma inscrição (endpoint) vinda de outro membro passa a ser dele: o navegador é um só.
+    @Transactional
+    public void inscreverAvisos(String chave, InscricaoAvisoDTO inscricao) {
+        if (!webPush.habilitado()) {
+            throw new FamiliaException(503, "Os avisos estão indisponíveis no momento.");
+        }
+        String endpoint = inscricao == null ? null : inscricao.getEndpoint();
+        String p256dh = inscricao == null || inscricao.getKeys() == null ? null : inscricao.getKeys().getP256dh();
+        String auth = inscricao == null || inscricao.getKeys() == null ? null : inscricao.getKeys().getAuth();
+        if (endpoint == null || p256dh == null || auth == null || !webPush.inscricaoValida(endpoint, p256dh, auth)) {
+            throw new FamiliaException(400, "Não foi possível ativar os avisos neste navegador.");
+        }
+        FamiliaMembroEntity eu = buscarOuCriarMembro(chave);
+        OffsetDateTime agora = OffsetDateTime.now();
+        FamiliaAvisoInscricaoEntity existente = entityManager.createQuery(
+                        "SELECT i FROM FamiliaAvisoInscricaoEntity i WHERE i.endpoint = :endpoint", FamiliaAvisoInscricaoEntity.class)
+                .setParameter("endpoint", endpoint)
+                .getResultStream()
+                .findFirst()
+                .orElse(null);
+        if (existente != null) {
+            existente.setMembroId(eu.getId());
+            existente.setP256dh(p256dh);
+            existente.setAuth(auth);
+            existente.setAtualizadoEm(agora);
+        } else {
+            entityManager.persist(FamiliaAvisoInscricaoEntity.builder()
+                    .membroId(eu.getId()).endpoint(endpoint).p256dh(p256dh).auth(auth)
+                    .criadoEm(agora).atualizadoEm(agora).build());
+        }
+        entityManager.flush();
+        List<Long> sobrando = entityManager.createQuery(
+                        "SELECT i.id FROM FamiliaAvisoInscricaoEntity i WHERE i.membroId = :eu ORDER BY i.atualizadoEm DESC, i.id DESC", Long.class)
+                .setParameter("eu", eu.getId())
+                .setFirstResult(MAX_INSCRICOES_AVISO)
+                .getResultList();
+        if (!sobrando.isEmpty()) {
+            entityManager.createQuery("DELETE FROM FamiliaAvisoInscricaoEntity i WHERE i.id IN :ids")
+                    .setParameter("ids", sobrando)
+                    .executeUpdate();
+        }
+    }
+
+    @Transactional
+    public void cancelarAvisos(String chave, String endpoint) {
+        buscarMembro(chave).ifPresent(eu -> entityManager.createQuery(
+                        "DELETE FROM FamiliaAvisoInscricaoEntity i WHERE i.membroId = :eu AND i.endpoint = :endpoint")
+                .setParameter("eu", eu.getId())
+                .setParameter("endpoint", endpoint == null ? "" : endpoint)
+                .executeUpdate());
     }
 
     // ------------------------------------------------------------------------------------------

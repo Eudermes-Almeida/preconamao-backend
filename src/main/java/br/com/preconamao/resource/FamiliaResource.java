@@ -1,14 +1,17 @@
 package br.com.preconamao.resource;
 
 import br.com.preconamao.dto.AceitarConviteDTO;
+import br.com.preconamao.dto.ChaveAvisoDTO;
 import br.com.preconamao.dto.ConviteDTO;
 import br.com.preconamao.dto.EnviarListaDTO;
 import br.com.preconamao.dto.FamiliaContatoDTO;
 import br.com.preconamao.dto.FamiliaEstadoDTO;
 import br.com.preconamao.dto.FamiliaNomeDTO;
+import br.com.preconamao.dto.InscricaoAvisoDTO;
 import br.com.preconamao.dto.NovoConviteDTO;
 import br.com.preconamao.service.FamiliaService;
 import br.com.preconamao.service.FamiliaService.FamiliaException;
+import br.com.preconamao.service.WebPushService;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.Consumes;
 import jakarta.ws.rs.DELETE;
@@ -43,6 +46,9 @@ public class FamiliaResource {
 
     @Inject
     FamiliaService familiaService;
+
+    @Inject
+    WebPushService webPush;
 
     @GET
     @APIResponses(value = {
@@ -142,6 +148,43 @@ public class FamiliaResource {
     public Response recusarLista(@HeaderParam(CABECALHO_CHAVE) String chave, @PathParam("id") Long id) {
         return executar(chave, () -> {
             familiaService.resolverLista(chave, id, false);
+            return Response.noContent().build();
+        });
+    }
+
+    @GET
+    @Path("/avisos/chave")
+    @APIResponses(value = {
+            @APIResponse(responseCode = "200", description = "Chave pública VAPID (null = avisos desligados no servidor)", content = @Content(schema = @Schema(implementation = ChaveAvisoDTO.class))),
+    })
+    @Operation(summary = "Chave para ativar os avisos no celular", description = "O app usa esta chave em pushManager.subscribe().")
+    public Response chaveAvisos(@HeaderParam(CABECALHO_CHAVE) String chave) {
+        return executar(chave, () -> Response.ok(new ChaveAvisoDTO(webPush.chavePublicaParaApp())).build());
+    }
+
+    @PUT
+    @Path("/avisos")
+    @Consumes(MediaType.APPLICATION_JSON)
+    @APIResponses(value = {
+            @APIResponse(responseCode = "204", description = "Avisos ativados para este aparelho"),
+            @APIResponse(responseCode = "400", description = "Inscrição inválida ou de serviço de push desconhecido"),
+            @APIResponse(responseCode = "503", description = "Avisos desligados no servidor"),
+    })
+    @Operation(summary = "Ativa (ou renova) os avisos no celular", description = "Corpo = PushSubscription.toJSON() do navegador.")
+    public Response inscreverAvisos(@HeaderParam(CABECALHO_CHAVE) String chave, InscricaoAvisoDTO corpo) {
+        return executar(chave, () -> {
+            familiaService.inscreverAvisos(chave, corpo);
+            return Response.noContent().build();
+        });
+    }
+
+    @POST
+    @Path("/avisos/cancelar")
+    @Consumes(MediaType.APPLICATION_JSON)
+    @Operation(summary = "Desativa os avisos deste navegador", description = "Corpo com o endpoint da inscrição.")
+    public Response cancelarAvisos(@HeaderParam(CABECALHO_CHAVE) String chave, InscricaoAvisoDTO corpo) {
+        return executar(chave, () -> {
+            familiaService.cancelarAvisos(chave, corpo == null ? null : corpo.getEndpoint());
             return Response.noContent().build();
         });
     }
