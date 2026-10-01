@@ -13,10 +13,13 @@ import jakarta.json.bind.Jsonb;
 import jakarta.json.bind.JsonbBuilder;
 import jakarta.persistence.EntityManager;
 
+import java.time.OffsetDateTime;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -29,7 +32,7 @@ public class AvisoFamiliaService {
 
     // Payload no formato que o service worker do Angular (ngsw) entende: ele mesmo mostra a
     // notificação e, no toque, abre o app (ou traz a aba aberta para a frente).
-    public record Destino(Long id, String endpoint, String p256dh, String auth) {
+    public record Destino(Long id, Long membroId, String endpoint, String p256dh, String auth) {
     }
 
     public record AvisoFamiliaEvento(List<Destino> destinos, String conteudoJson) {
@@ -60,7 +63,7 @@ public class AvisoFamiliaService {
                         "SELECT i FROM FamiliaAvisoInscricaoEntity i WHERE i.membroId = :membro", FamiliaAvisoInscricaoEntity.class)
                 .setParameter("membro", membroId)
                 .getResultStream()
-                .map(i -> new Destino(i.getId(), i.getEndpoint(), i.getP256dh(), i.getAuth()))
+                .map(i -> new Destino(i.getId(), i.getMembroId(), i.getEndpoint(), i.getP256dh(), i.getAuth()))
                 .toList();
         if (!destinos.isEmpty()) {
             evento.fire(new AvisoFamiliaEvento(destinos, conteudo(titulo, texto, tag)));
@@ -73,6 +76,7 @@ public class AvisoFamiliaService {
 
     private void enviar(AvisoFamiliaEvento aviso) {
         List<Long> extintas = new ArrayList<>();
+        Set<Long> membrosAfetados = new HashSet<>();
         int entregues = 0;
         for (Destino destino : aviso.destinos()) {
             WebPushService.Resultado resultado = webPush.enviar(destino.endpoint(), destino.p256dh(), destino.auth(), aviso.conteudoJson());
@@ -80,17 +84,26 @@ public class AvisoFamiliaService {
                 entregues++;
             } else if (resultado == WebPushService.Resultado.INSCRICAO_EXTINTA) {
                 extintas.add(destino.id());
+                membrosAfetados.add(destino.membroId());
             }
         }
         Log.infof("Aviso da Família: %d de %d entregue(s) ao serviço de push, %d inscrição(ões) extinta(s)",
                 entregues, aviso.destinos().size(), extintas.size());
-        // Avisos desativados no celular, app desinstalado, dados do navegador apagados...
+        // App desinstalado, dados do navegador apagados, avisos bloqueados... Sem nenhuma inscrição
+        // viva, o celular fica marcado como "app removido" até dar sinal de vida (ver buscarMembro).
         if (!extintas.isEmpty()) {
             try {
-                QuarkusTransaction.requiringNew().run(() -> entityManager
-                        .createQuery("DELETE FROM FamiliaAvisoInscricaoEntity i WHERE i.id IN :ids")
-                        .setParameter("ids", extintas)
-                        .executeUpdate());
+                QuarkusTransaction.requiringNew().run(() -> {
+                    entityManager.createQuery("DELETE FROM FamiliaAvisoInscricaoEntity i WHERE i.id IN :ids")
+                            .setParameter("ids", extintas)
+                            .executeUpdate();
+                    entityManager.createQuery("UPDATE FamiliaMembroEntity m SET m.appRemovidoEm = :agora "
+                                    + "WHERE m.id IN :membros AND NOT EXISTS "
+                                    + "(SELECT i FROM FamiliaAvisoInscricaoEntity i WHERE i.membroId = m.id)")
+                            .setParameter("agora", OffsetDateTime.now())
+                            .setParameter("membros", membrosAfetados)
+                            .executeUpdate();
+                });
             } catch (Exception e) {
                 Log.warn("Não foi possível apagar inscrições de aviso extintas", e);
             }

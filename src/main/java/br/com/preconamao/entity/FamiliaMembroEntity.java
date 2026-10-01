@@ -34,4 +34,9 @@ public class FamiliaMembroEntity {
     @Column(name = "criado_em", nullable = false)
     private OffsetDateTime criadoEm;
 
+    // Quando o serviço de push confirmou que o app deste aparelho foi removido (scripts/022); null =
+    // nada confirmado. Qualquer acesso do aparelho limpa.
+    @Column(name = "app_removido_em")
+    private OffsetDateTime appRemovidoEm;
+
 }

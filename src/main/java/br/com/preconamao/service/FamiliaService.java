@@ -98,11 +98,15 @@ public class FamiliaService {
         return chave != null && CHAVE.matcher(chave).matches();
     }
 
+    // Só é chamado com a chave de quem está fazendo a requisição: se o aparelho estava marcado como
+    // "app removido", ele acabou de provar que está vivo.
     private Optional<FamiliaMembroEntity> buscarMembro(String chave) {
-        return entityManager.createQuery("SELECT m FROM FamiliaMembroEntity m WHERE m.chaveHash = :hash", FamiliaMembroEntity.class)
+        Optional<FamiliaMembroEntity> membro = entityManager.createQuery("SELECT m FROM FamiliaMembroEntity m WHERE m.chaveHash = :hash", FamiliaMembroEntity.class)
                 .setParameter("hash", LojaService.sha256(chave.getBytes(StandardCharsets.UTF_8)))
                 .getResultStream()
                 .findFirst();
+        membro.filter(m -> m.getAppRemovidoEm() != null).ifPresent(m -> m.setAppRemovidoEm(null));
+        return membro;
     }
 
     // O membro nasce na primeira ação dele na Família (nome, convite ou aceite).
@@ -145,14 +149,15 @@ public class FamiliaService {
         Long meuId = eu.get().getId();
 
         List<Object[]> linhas = entityManager.createQuery(
-                        "SELECT c.contatoId, c.apelido, m.nome FROM FamiliaContatoEntity c, FamiliaMembroEntity m "
+                        "SELECT c.contatoId, c.apelido, m.nome, m.appRemovidoEm FROM FamiliaContatoEntity c, FamiliaMembroEntity m "
                                 + "WHERE c.membroId = :eu AND m.id = c.contatoId ORDER BY c.criadoEm", Object[].class)
                 .setParameter("eu", meuId)
                 .getResultList();
         Map<Long, FamiliaContatoDTO> contatos = new LinkedHashMap<>();
         for (Object[] linha : linhas) {
             contatos.put((Long) linha[0], FamiliaContatoDTO.builder()
-                    .id((Long) linha[0]).apelido((String) linha[1]).nome((String) linha[2]).build());
+                    .id((Long) linha[0]).apelido((String) linha[1]).nome((String) linha[2])
+                    .parouDeReceber(linha[3] != null).build());
         }
 
         List<FamiliaListaEntity> pendentes = entityManager.createQuery(

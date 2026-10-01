@@ -2,7 +2,7 @@ package br.com.preconamao.dto;
 
 import lombok.*;
 
-// Uma pessoa ligada a este aparelho: o id serve para enviar e remover.
+// Uma pessoa conectada a este aparelho: o id serve para enviar e remover.
 @Data
 @Builder
 @AllArgsConstructor
@@ -16,5 +16,9 @@ public class FamiliaContatoDTO {
 
     // O nome que ela mesma digitou ("João").
     private String nome;
+
+    // true = o serviço de push confirmou que o app do celular dela foi removido: as listas não
+    // chegam mais ("O celular de Marido parou de receber listas").
+    private boolean parouDeReceber;
 
 }
