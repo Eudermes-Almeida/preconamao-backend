@@ -3,6 +3,7 @@ package br.com.preconamao.service;
 import br.com.preconamao.dto.ConteudoListaDTO;
 import br.com.preconamao.dto.ConviteDTO;
 import br.com.preconamao.dto.InscricaoAvisoDTO;
+import br.com.preconamao.dto.ListaEnviadaDTO;
 import br.com.preconamao.dto.FamiliaContatoDTO;
 import br.com.preconamao.dto.FamiliaEstadoDTO;
 import br.com.preconamao.dto.ListaRecebidaDTO;
@@ -46,6 +47,9 @@ public class FamiliaService {
     private static final int MAX_LINHAS_LISTA = 200;
     private static final int MAX_QUANTIDADE = 99;
     private static final int MAX_NOME = 30;
+    // "Listas enviadas" no painel: quanto tempo e quantas quem enviou acompanha.
+    private static final int DIAS_LISTAS_ENVIADAS = 7;
+    private static final int MAX_LISTAS_ENVIADAS = 10;
     // Inscrições de aviso por membro (Chrome, app instalado, outro navegador...): as mais antigas saem.
     private static final int MAX_INSCRICOES_AVISO = 5;
 
@@ -136,7 +140,7 @@ public class FamiliaService {
     public FamiliaEstadoDTO estado(String chave) {
         Optional<FamiliaMembroEntity> eu = buscarMembro(chave);
         if (eu.isEmpty()) {
-            return FamiliaEstadoDTO.builder().contatos(List.of()).recebidas(List.of()).build();
+            return FamiliaEstadoDTO.builder().contatos(List.of()).recebidas(List.of()).enviadas(List.of()).build();
         }
         Long meuId = eu.get().getId();
 
@@ -160,7 +164,7 @@ public class FamiliaService {
         Map<Long, String> nomes = new HashMap<>();
         List<ListaRecebidaDTO> recebidas = pendentes.stream().map(lista -> {
             FamiliaContatoDTO contato = contatos.get(lista.getDeMembroId());
-            // Ligação removida depois do envio: a lista ainda chega, com o nome de quem mandou.
+            // Conexão removida depois do envio: a lista ainda chega, com o nome de quem mandou.
             String nome = contato != null ? contato.getNome()
                     : nomes.computeIfAbsent(lista.getDeMembroId(), id -> entityManager.find(FamiliaMembroEntity.class, id).getNome());
             return ListaRecebidaDTO.builder()
@@ -174,10 +178,33 @@ public class FamiliaService {
                     .build();
         }).toList();
 
+        List<ListaEnviadaDTO> enviadas = entityManager.createQuery(
+                        "SELECT l FROM FamiliaListaEntity l WHERE l.deMembroId = :eu AND l.enviadaEm >= :desde ORDER BY l.enviadaEm DESC, l.id DESC",
+                        FamiliaListaEntity.class)
+                .setParameter("eu", meuId)
+                .setParameter("desde", OffsetDateTime.now().minusDays(DIAS_LISTAS_ENVIADAS))
+                .setMaxResults(MAX_LISTAS_ENVIADAS)
+                .getResultList().stream().map(lista -> {
+                    FamiliaContatoDTO contato = contatos.get(lista.getParaMembroId());
+                    // Conexão removida depois do envio: mostra o nome de quem recebeu.
+                    String apelido = contato != null ? contato.getApelido()
+                            : nomes.computeIfAbsent(lista.getParaMembroId(), id -> entityManager.find(FamiliaMembroEntity.class, id).getNome());
+                    return ListaEnviadaDTO.builder()
+                            .id(lista.getId())
+                            .paraId(lista.getParaMembroId())
+                            .apelido(apelido)
+                            .quantidadeItens(lista.getQuantidadeItens())
+                            .situacao(lista.getSituacao())
+                            .enviadaEm(lista.getEnviadaEm().toString())
+                            .resolvidaEm(lista.getResolvidaEm() == null ? null : lista.getResolvidaEm().toString())
+                            .build();
+                }).toList();
+
         return FamiliaEstadoDTO.builder()
                 .nome(eu.get().getNome())
                 .contatos(List.copyOf(contatos.values()))
                 .recebidas(recebidas)
+                .enviadas(enviadas)
                 .build();
     }
 
@@ -229,7 +256,7 @@ public class FamiliaService {
                 .build();
     }
 
-    // Aceito, a ligação vale nos dois sentidos: cada lado com o apelido que deu ao outro. Aceitar
+    // Aceito, a conexão vale nos dois sentidos: cada lado com o apelido que deu ao outro. Aceitar
     // de novo quem já está ligado só atualiza os apelidos.
     @Transactional
     public FamiliaContatoDTO aceitarConvite(String chave, String codigo, String apelido) {
@@ -266,7 +293,7 @@ public class FamiliaService {
         }
     }
 
-    // Remover desfaz a ligação dos dois lados: nenhum dos dois consegue mais enviar ao outro.
+    // Remover desfaz a conexão dos dois lados: nenhum dos dois consegue mais enviar ao outro.
     @Transactional
     public void removerContato(String chave, Long contatoId) {
         FamiliaMembroEntity eu = buscarMembro(chave)
@@ -324,7 +351,7 @@ public class FamiliaService {
     public Long enviarLista(String chave, Long paraId, ConteudoListaDTO conteudo) {
         FamiliaMembroEntity eu = membroComNome(chave);
         if (paraId == null || buscarContato(eu.getId(), paraId).isEmpty()) {
-            throw new FamiliaException(404, "Esta pessoa não está mais ligada a você.");
+            throw new FamiliaException(404, "Esta pessoa não está mais conectada a você.");
         }
         ConteudoListaDTO limpo = validarConteudo(conteudo);
         int linhas = limpo.getItens().size() + limpo.getProdutos().size();
@@ -372,6 +399,17 @@ public class FamiliaService {
         }
         lista.setSituacao(aceita ? FamiliaListaEntity.ACEITA : FamiliaListaEntity.RECUSADA);
         lista.setResolvidaEm(OffsetDateTime.now());
+
+        // Quem enviou fica sabendo, com o apelido que deu a quem recebeu ("Marido juntou sua lista ✓").
+        String quem = buscarContato(lista.getDeMembroId(), eu.getId()).map(FamiliaContatoEntity::getApelido).orElse(eu.getNome());
+        int itens = lista.getQuantidadeItens();
+        if (aceita) {
+            avisos.avisar(lista.getDeMembroId(), quem + " juntou sua lista ✓",
+                    itens == 1 ? "O item entrou na pré-lista." : "Os " + itens + " itens entraram na pré-lista.", "familia-resposta");
+        } else {
+            avisos.avisar(lista.getDeMembroId(), quem + " recusou sua lista",
+                    itens == 1 ? "O item não entrou na pré-lista." : "Os " + itens + " itens não entraram na pré-lista.", "familia-resposta");
+        }
     }
 
     private ConteudoListaDTO validarConteudo(ConteudoListaDTO conteudo) {

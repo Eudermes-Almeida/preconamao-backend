@@ -52,7 +52,7 @@ public class FamiliaResource {
 
     @GET
     @APIResponses(value = {
-            @APIResponse(responseCode = "200", description = "Nome, contatos e listas pendentes", content = @Content(schema = @Schema(implementation = FamiliaEstadoDTO.class))),
+            @APIResponse(responseCode = "200", description = "Nome, contatos, listas pendentes e listas enviadas (7 dias)", content = @Content(schema = @Schema(implementation = FamiliaEstadoDTO.class))),
             @APIResponse(responseCode = "401", description = "Chave do aparelho ausente ou inválida"),
     })
     @Operation(summary = "Estado da Família deste aparelho", description = "Consultado pelo app a cada ~30 s com a pré-lista em uso.")
@@ -97,19 +97,19 @@ public class FamiliaResource {
     @Path("/convites/{codigo}/aceitar")
     @Consumes(MediaType.APPLICATION_JSON)
     @APIResponses(value = {
-            @APIResponse(responseCode = "200", description = "Ligados nos dois sentidos", content = @Content(schema = @Schema(implementation = FamiliaContatoDTO.class))),
+            @APIResponse(responseCode = "200", description = "Conectados nos dois sentidos", content = @Content(schema = @Schema(implementation = FamiliaContatoDTO.class))),
             @APIResponse(responseCode = "404", description = "Código inexistente"),
             @APIResponse(responseCode = "409", description = "Convite do próprio aparelho"),
             @APIResponse(responseCode = "410", description = "Convite já usado ou vencido"),
     })
-    @Operation(summary = "Aceita um convite", description = "Liga os dois aparelhos; os dois passam a poder enviar listas um ao outro.")
+    @Operation(summary = "Aceita um convite", description = "Conecta os dois aparelhos; os dois passam a poder enviar listas um ao outro.")
     public Response aceitarConvite(@HeaderParam(CABECALHO_CHAVE) String chave, @PathParam("codigo") String codigo, AceitarConviteDTO corpo) {
         return executar(chave, () -> Response.ok(familiaService.aceitarConvite(chave, codigo, corpo == null ? null : corpo.getApelido())).build());
     }
 
     @DELETE
     @Path("/contatos/{id}")
-    @Operation(summary = "Desfaz a ligação com um contato", description = "Vale para os dois lados.")
+    @Operation(summary = "Desfaz a conexão com um contato", description = "Vale para os dois lados.")
     public Response removerContato(@HeaderParam(CABECALHO_CHAVE) String chave, @PathParam("id") Long id) {
         return executar(chave, () -> {
             familiaService.removerContato(chave, id);
@@ -123,7 +123,7 @@ public class FamiliaResource {
     @APIResponses(value = {
             @APIResponse(responseCode = "200", description = "Lista enviada (id no corpo)"),
             @APIResponse(responseCode = "400", description = "Lista vazia, grande demais ou sem nome"),
-            @APIResponse(responseCode = "404", description = "Destinatário não está ligado a este aparelho"),
+            @APIResponse(responseCode = "404", description = "Destinatário não está conectado a este aparelho"),
             @APIResponse(responseCode = "429", description = "Listas demais nas últimas 24 h"),
     })
     @Operation(summary = "Envia itens da pré-lista para um contato")
