@@ -22,6 +22,10 @@ public class LojaPublicaDTO {
 
     private double longitude;
 
+    // Entrada: até onde a loja aparece para ser escolhida pela localização.
     private int raioM;
+
+    // Saída: até onde a escolha continua valendo (o app só tira a loja com leituras fora dele).
+    private int raioSaidaM;
 
 }

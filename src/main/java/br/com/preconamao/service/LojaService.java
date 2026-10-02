@@ -29,6 +29,8 @@ public class LojaService {
     @ConfigProperty(name = "loja.id-padrao", defaultValue = "1")
     Integer lojaPadraoId;
 
+    private static final int RAIO_SAIDA_PADRAO_M = 300;
+
     @Inject
     EntityManager entityManager;
 
@@ -94,6 +96,8 @@ public class LojaService {
                         .latitude(l.getLatitude().doubleValue())
                         .longitude(l.getLongitude().doubleValue())
                         .raioM(l.getRaioM())
+                        // Sem raio de saída cadastrado: 300 m, e nunca menor que o de entrada.
+                        .raioSaidaM(Math.max(l.getRaioM(), l.getRaioSaidaM() != null ? l.getRaioSaidaM() : RAIO_SAIDA_PADRAO_M))
                         .build())
                 .toList();
     }

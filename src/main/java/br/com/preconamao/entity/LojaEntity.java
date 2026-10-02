@@ -70,8 +70,13 @@ public class LojaEntity {
     @Column(name = "longitude", precision = 9, scale = 6)
     private BigDecimal longitude;
 
+    // Raio de entrada: até onde a loja aparece para ser escolhida pela localização.
     @Column(name = "raio_m")
     private Integer raioM;
+
+    // Raio de saída (scripts/024): até onde a escolha continua valendo; maior que o de entrada.
+    @Column(name = "raio_saida_m")
+    private Integer raioSaidaM;
 
     @Column(name = "posicao_atualizada_em")
     private OffsetDateTime posicaoAtualizadaEm;
