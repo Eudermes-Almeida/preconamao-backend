@@ -1,5 +1,7 @@
 package br.com.preconamao.service;
 
+import br.com.preconamao.dto.LojaPublicaDTO;
+import br.com.preconamao.dto.PosicaoLojaDTO;
 import br.com.preconamao.entity.LojaEntity;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -8,11 +10,14 @@ import jakarta.persistence.NoResultException;
 import jakarta.transaction.Transactional;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 
+import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.OffsetDateTime;
 import java.util.HexFormat;
+import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 
@@ -73,6 +78,44 @@ public class LojaService {
         boolean confiavel = sinalRecente(loja) && loja.getHashAplicado() != null
                 && Objects.equals(loja.getHashInformado(), loja.getHashAplicado());
         return new SituacaoPreco(confiavel, confiavel ? loja.getUltimoSinalEm() : null);
+    }
+
+    // Lojas que o cliente pode escolher: só as que têm posição cadastrada.
+    @Transactional
+    public List<LojaPublicaDTO> lojasComPosicao() {
+        return entityManager.createQuery(
+                        "SELECT l FROM LojaEntity l WHERE l.slug IS NOT NULL AND l.latitude IS NOT NULL"
+                                + " AND l.longitude IS NOT NULL AND l.raioM IS NOT NULL ORDER BY l.id", LojaEntity.class)
+                .getResultList().stream()
+                .map(l -> LojaPublicaDTO.builder()
+                        .id(l.getId())
+                        .slug(l.getSlug())
+                        .nome(l.getNomeCurto() != null ? l.getNomeCurto() : l.getNome())
+                        .latitude(l.getLatitude().doubleValue())
+                        .longitude(l.getLongitude().doubleValue())
+                        .raioM(l.getRaioM())
+                        .build())
+                .toList();
+    }
+
+    // Grava a posição medida de dentro da loja. Devolve a mensagem de erro, ou null se gravou.
+    @Transactional
+    public String registrarPosicao(Integer lojaId, PosicaoLojaDTO posicao) {
+        if (posicao == null || posicao.getLatitude() == null || posicao.getLongitude() == null
+                || Math.abs(posicao.getLatitude()) > 90 || Math.abs(posicao.getLongitude()) > 180) {
+            return "Latitude e longitude são obrigatórias e precisam ser válidas.";
+        }
+        if (posicao.getRaioM() != null && (posicao.getRaioM() < 10 || posicao.getRaioM() > 2000)) {
+            return "O raio deve ficar entre 10 e 2000 metros.";
+        }
+        LojaEntity loja = entityManager.find(LojaEntity.class, lojaId);
+        loja.setLatitude(BigDecimal.valueOf(posicao.getLatitude()).setScale(6, RoundingMode.HALF_UP));
+        loja.setLongitude(BigDecimal.valueOf(posicao.getLongitude()).setScale(6, RoundingMode.HALF_UP));
+        if (posicao.getRaioM() != null) {
+            loja.setRaioM(posicao.getRaioM());
+        }
+        loja.setPosicaoAtualizadaEm(OffsetDateTime.now());
+        return null;
     }
 
     public boolean sinalRecente(LojaEntity loja) {

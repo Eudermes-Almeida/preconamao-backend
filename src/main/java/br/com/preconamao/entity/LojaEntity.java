@@ -6,6 +6,7 @@ import jakarta.persistence.Id;
 import jakarta.persistence.Table;
 import lombok.*;
 
+import java.math.BigDecimal;
 import java.time.OffsetDateTime;
 
 // Loja que envia o PRICETAB pelo agente (scripts/016_carga_automatica.sql). Por enquanto só a loja
@@ -54,5 +55,25 @@ public class LojaEntity {
     // SHA-256 da chave de leitura do relatório de mídias (scripts/018); null = relatório fechado.
     @Column(name = "chave_relatorio_hash", length = 64)
     private String chaveRelatorioHash;
+
+    // Geolocalização (scripts/023): o slug é o fim do endereço do QR code afixado na loja; sem
+    // latitude/longitude a loja não aparece para o cliente.
+    @Column(name = "slug", length = 60)
+    private String slug;
+
+    @Column(name = "nome_curto", length = 30)
+    private String nomeCurto;
+
+    @Column(name = "latitude", precision = 9, scale = 6)
+    private BigDecimal latitude;
+
+    @Column(name = "longitude", precision = 9, scale = 6)
+    private BigDecimal longitude;
+
+    @Column(name = "raio_m")
+    private Integer raioM;
+
+    @Column(name = "posicao_atualizada_em")
+    private OffsetDateTime posicaoAtualizadaEm;
 
 }
