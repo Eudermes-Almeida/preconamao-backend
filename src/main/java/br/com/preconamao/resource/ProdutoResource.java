@@ -18,6 +18,7 @@ import org.eclipse.microprofile.openapi.annotations.responses.APIResponses;
 import org.eclipse.microprofile.openapi.annotations.tags.Tag;
 
 import java.util.Arrays;
+import java.util.List;
 
 @Path("/produtos")
 public class ProdutoResource {
@@ -37,8 +38,9 @@ public class ProdutoResource {
             @APIResponse(responseCode = "400", description = "Descrição não informada"),
             @APIResponse(responseCode = "500", description = "Erro interno do servidor"),
     })
-    @Operation(summary = "Busca produtos por descrição", description = "Recebe o texto reconhecido por voz e retorna até 10 produtos com descrição parecida, do mais para o menos similar; o cabeçalho X-Total-Encontrados traz quantos foram achados ao todo.")
-    public Response buscaProdutosPorDescricao(@QueryParam("descricao") String descricao) {
+    @Operation(summary = "Busca produtos por descrição", description = "Recebe o texto reconhecido por voz e retorna até 10 produtos com descrição parecida, do mais para o menos similar; o cabeçalho X-Total-Encontrados traz quantos foram achados ao todo. Os códigos em destaques (ofertas da vitrine) vêm primeiro quando estão entre os mais parecidos.")
+    public Response buscaProdutosPorDescricao(@QueryParam("descricao") String descricao,
+                                              @QueryParam("destaques") String destaques) {
         try {
             if (descricao == null || descricao.trim().isEmpty()) {
                 return Response.status(Response.Status.BAD_REQUEST)
@@ -46,7 +48,9 @@ public class ProdutoResource {
                         .build();
             }
 
-            ProdutoService.ResultadoBusca resultado = produtoService.buscaPorDescricao(descricao);
+            // Códigos das ofertas da vitrine, separados por vírgula: vêm primeiro quando são dos mais parecidos.
+            ProdutoService.ResultadoBusca resultado = produtoService.buscaPorDescricao(descricao,
+                    destaques == null || destaques.isBlank() ? List.of() : Arrays.asList(destaques.split(",")));
             return Response.ok(resultado.produtos())
                     .header(CABECALHO_TOTAL, resultado.totalEncontrado())
                     .build();

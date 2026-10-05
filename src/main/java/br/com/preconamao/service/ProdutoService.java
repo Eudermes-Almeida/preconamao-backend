@@ -122,6 +122,12 @@ public class ProdutoService {
     // mesmo produto (mesmo grupo_codigo) aparecem uma vez só. Empate (comum: "iogurte" está inteiro
     // em "BOLO IOGURTE kg" e em "IOGURTE BATAVO..."): primeiro a descrição que começa com o que foi
     // falado (o tipo do produto vem na frente), depois a mais parecida no todo.
+    // Ofertas da vitrine (códigos que o app manda em "destaques") vêm ANTES dos demais, desde que
+    // estejam entre os mais parecidos (nota até MARGEM_DO_MELHOR abaixo da melhor): "refrigerante"
+    // traz a Coca-Cola em oferta primeiro, mas uma oferta só vagamente parecida não sobe. Com uma
+    // palavra só, a oferta também precisa COMEÇAR com ela (ser o tipo pedido): "leite" não sobe o
+    // doce de leite em oferta; "doce de leite" sobe. A prioridade entra antes do LIMIT, para a
+    // oferta não ficar de fora dos 10.
     private static final String NOTA = "(SELECT avg(word_similarity(w, q.descricao_busca)) "
             + "FROM unnest(CAST(:palavras AS text[])) w)";
 
@@ -131,6 +137,12 @@ public class ProdutoService {
     @Transactional
     @SuppressWarnings("unchecked")
     public ResultadoBusca buscaPorDescricao(String descricao) {
+        return buscaPorDescricao(descricao, List.of());
+    }
+
+    @Transactional
+    @SuppressWarnings("unchecked")
+    public ResultadoBusca buscaPorDescricao(String descricao, List<String> destaques) {
         String textoTratado = removePalavrasDeEnchimento(descricao);
 
         if (textoTratado.isEmpty()) {
@@ -143,20 +155,32 @@ public class ProdutoService {
 
         // Só letras e dígitos (ver removePalavrasDeEnchimento): seguro dentro do literal de array.
         String palavras = "{" + textoTratado.replace(' ', ',') + "}";
+        // Idem: só códigos numéricos (o resto é descartado).
+        String codigosDestaque = "{" + destaques.stream().map(String::trim)
+                .filter(codigo -> codigo.matches("\\d{1,14}")).distinct().limit(MAX_LOTE)
+                .collect(Collectors.joining(",")) + "}";
 
         List<ProdutoEntity> produtos = entityManager.createNativeQuery(
                         "SELECT p.* FROM produtos p JOIN ("
-                                + "  SELECT DISTINCT ON (a.grupo) a.id, a.similaridade FROM ("
+                                + "  SELECT DISTINCT ON (a.grupo) a.id, a.similaridade, a.oferta FROM ("
                                 + "    SELECT q.id, q.codigo_barras, coalesce(q.grupo_codigo, q.codigo_barras) AS grupo, "
-                                + "           " + NOTA + " AS similaridade "
+                                + "           " + NOTA + " AS similaridade, "
+                                + "           coalesce(q.grupo_codigo, q.codigo_barras) IN ("
+                                + "             SELECT coalesce(d.grupo_codigo, d.codigo_barras) FROM produtos d "
+                                + "              WHERE d.ativo AND d.codigo_barras = ANY (CAST(:destaques AS text[]))) AS oferta "
                                 + "      FROM produtos q WHERE q.ativo AND :texto <% q.descricao_busca) a "
                                 + "  ORDER BY a.grupo, a.similaridade DESC, (a.codigo_barras = a.grupo) DESC) m ON m.id = p.id "
-                                + "ORDER BY m.similaridade DESC, starts_with(p.descricao_busca, :texto) DESC, "
+                                + "ORDER BY (m.oferta AND m.similaridade >= max(m.similaridade) OVER () - :margem "
+                                + "          AND (:variasPalavras OR starts_with(p.descricao_busca, :texto))) DESC, "
+                                + "m.similaridade DESC, starts_with(p.descricao_busca, :texto) DESC, "
                                 + "similarity(:texto, p.descricao_busca) DESC, coalesce(p.descricao_expandida, p.descricao) "
                                 + "LIMIT :limite",
                         ProdutoEntity.class)
                 .setParameter("texto", textoTratado)
                 .setParameter("palavras", palavras)
+                .setParameter("destaques", codigosDestaque)
+                .setParameter("variasPalavras", textoTratado.contains(" "))
+                .setParameter("margem", MARGEM_DO_MELHOR)
                 .setParameter("limite", MAX_CANDIDATOS)
                 .getResultList();
 
@@ -166,11 +190,12 @@ public class ProdutoService {
         // Só conta quando a lista veio cheia.
         long total = produtos.size();
         if (produtos.size() == MAX_CANDIDATOS) {
-            // A melhor nota é a do 1º da lista (ordenada pela nota).
+            // A melhor nota entre os produtos da lista (o 1º pode ser uma oferta, com nota um pouco menor).
             double melhor = ((Number) entityManager.createNativeQuery(
-                            "SELECT " + NOTA + " FROM produtos q WHERE q.id = :id")
+                            "SELECT max(" + NOTA + ") FROM produtos q WHERE q.id = ANY (CAST(:ids AS bigint[]))")
                     .setParameter("palavras", palavras)
-                    .setParameter("id", produtos.get(0).getId())
+                    .setParameter("ids", produtos.stream().map(produto -> String.valueOf(produto.getId()))
+                            .collect(Collectors.joining(",", "{", "}")))
                     .getSingleResult()).doubleValue();
             total = ((Number) entityManager.createNativeQuery(
                             "SELECT count(DISTINCT x.grupo) FROM ("
