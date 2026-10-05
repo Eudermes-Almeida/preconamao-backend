@@ -22,6 +22,10 @@ import java.util.Arrays;
 @Path("/produtos")
 public class ProdutoResource {
 
+    // Total de produtos parecidos, além dos até 10 devolvidos na lista (o app pede para o cliente
+    // falar também a marca quando há mais). Liberado no CORS (quarkus.http.cors.exposed-headers).
+    static final String CABECALHO_TOTAL = "X-Total-Encontrados";
+
     @Inject
     ProdutoService produtoService;
 
@@ -33,7 +37,7 @@ public class ProdutoResource {
             @APIResponse(responseCode = "400", description = "Descrição não informada"),
             @APIResponse(responseCode = "500", description = "Erro interno do servidor"),
     })
-    @Operation(summary = "Busca produtos por descrição", description = "Recebe o texto reconhecido por voz e retorna até 5 produtos com descrição parecida, do mais para o menos similar.")
+    @Operation(summary = "Busca produtos por descrição", description = "Recebe o texto reconhecido por voz e retorna até 10 produtos com descrição parecida, do mais para o menos similar; o cabeçalho X-Total-Encontrados traz quantos foram achados ao todo.")
     public Response buscaProdutosPorDescricao(@QueryParam("descricao") String descricao) {
         try {
             if (descricao == null || descricao.trim().isEmpty()) {
@@ -42,7 +46,10 @@ public class ProdutoResource {
                         .build();
             }
 
-            return Response.ok(produtoService.buscaPorDescricao(descricao)).build();
+            ProdutoService.ResultadoBusca resultado = produtoService.buscaPorDescricao(descricao);
+            return Response.ok(resultado.produtos())
+                    .header(CABECALHO_TOTAL, resultado.totalEncontrado())
+                    .build();
         } catch (Exception e) {
             return Response.status(Response.Status.INTERNAL_SERVER_ERROR)
                     .entity("Erro ao buscar produtos: " + e.getMessage())

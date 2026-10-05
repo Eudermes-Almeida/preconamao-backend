@@ -27,11 +27,26 @@ public class ProdutoEntity {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
-    @Column(name = "codigo_barras", nullable = false, length = 13)
+    @Column(name = "codigo_barras", nullable = false, length = 14)
     private String codigoBarras;
 
+    // Como veio do PRICETAB (abreviada: "IOG BATAVO 170G MOR").
     @Column(name = "descricao", nullable = false, length = 40)
     private String descricao;
+
+    // Com as abreviações por extenso ("IOGURTE BATAVO 170G MORANGO"), calculada pelo banco em toda
+    // carga (expandir_descricao(), scripts/025_pricetab_real.sql). É a que o app mostra.
+    @Column(name = "descricao_expandida", length = 120)
+    private String descricaoExpandida;
+
+    // Código interno que a etiqueta da balança traz (ver codigo_balanca_de() no script 025).
+    @Column(name = "codigo_balanca", length = 8)
+    private String codigoBalanca;
+
+    // Menor código entre os de mesma descrição e mesmo preço (códigos auxiliares do mesmo
+    // produto): a busca por descrição mostra cada grupo uma vez só.
+    @Column(name = "grupo_codigo", length = 14)
+    private String grupoCodigo;
 
     // Preço em centavos, no mesmo formato inteiro que já vem do PRICETAB.TXT da Gertec
     // (ex: "0000000389" = 389 centavos) — evita erro de arredondamento com decimal.

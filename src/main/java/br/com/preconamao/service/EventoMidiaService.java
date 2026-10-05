@@ -311,7 +311,7 @@ public class EventoMidiaService {
             return descricoes;
         }
         entityManager.createQuery(
-                        "SELECT p.codigoBarras, p.descricao FROM ProdutoEntity p WHERE p.codigoBarras IN :codigos", Object[].class)
+                        "SELECT p.codigoBarras, COALESCE(p.descricaoExpandida, p.descricao) FROM ProdutoEntity p WHERE p.codigoBarras IN :codigos", Object[].class)
                 .setParameter("codigos", codigos)
                 .getResultList()
                 .forEach(linha -> descricoes.put((String) linha[0], (String) linha[1]));

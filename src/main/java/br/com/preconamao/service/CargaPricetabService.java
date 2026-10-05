@@ -35,9 +35,16 @@ public class CargaPricetabService {
     // 15 mil linhas dão ~1 MB; 10 MB sobra e barra envio absurdo.
     public static final int TAMANHO_MAXIMO_BYTES = 10 * 1024 * 1024;
 
-    // Formato Gertec: CODIGO|DESCRICAO(40)|PRECO(10, centavos)||
+    // Dois formatos, reconhecidos linha a linha:
+    //   simulado (Gertec):   CODIGO|DESCRICAO(40)|PRECO(10 dígitos, centavos)||
+    //   real (PRICE2.TXT):   CODIGO|DESCRICAO(40)|12,99|          (preço em reais, com vírgula)
     private static final Pattern CODIGO = Pattern.compile("\\d{1,14}");
     private static final Pattern PRECO = Pattern.compile("\\d{1,10}");
+    private static final Pattern PRECO_REAIS = Pattern.compile("\\d{1,3}(\\.?\\d{3})*,\\d{2}");
+    // Começo de registro: a linha que não começa assim é continuação da anterior (no arquivo real,
+    // algumas descrições vêm cortadas por uma quebra de linha no meio).
+    private static final Pattern INICIO_REGISTRO = Pattern.compile("^\\d{1,14}\\|.*");
+    private static final Pattern REGISTRO_COMPLETO = Pattern.compile("^\\d{1,14}\\|.*\\|[\\d.,]+\\|\\|?$");
     private static final int MAX_DESCRICAO = 40;
     private static final int MAX_ERROS_NA_MENSAGEM = 20;
     private static final int CARGAS_COM_ARQUIVO_GUARDADO = 30;
@@ -290,18 +297,26 @@ public class CargaPricetabService {
             }
             total++;
             int numero = i + 1;
-            if (!linha.endsWith("||")) {
-                erros.add("linha " + numero + " não termina com ||");
+            // Registro cortado por quebra de linha: emenda as linhas seguintes que não começam um
+            // registro novo (a quebra cai no meio da descrição de 40 posições, então emenda sem espaço).
+            while (!REGISTRO_COMPLETO.matcher(linha).matches() && i + 1 < linhas.length
+                    && !linhas[i + 1].isBlank() && !INICIO_REGISTRO.matcher(linhas[i + 1]).matches()) {
+                linha = linha + linhas[++i].stripTrailing();
+            }
+            String semFinal = linha.endsWith("||") ? linha.substring(0, linha.length() - 2)
+                    : linha.endsWith("|") ? linha.substring(0, linha.length() - 1) : null;
+            if (semFinal == null) {
+                erros.add("linha " + numero + " não termina com |");
                 continue;
             }
-            String[] partes = linha.substring(0, linha.length() - 2).split("\\|", -1);
+            String[] partes = semFinal.split("\\|", -1);
             if (partes.length != 3) {
                 erros.add("linha " + numero + " não tem 3 campos");
                 continue;
             }
             String codigo = partes[0].trim();
             String descricao = partes[1].strip();
-            String preco = partes[2].trim();
+            Integer preco = precoEmCentavos(partes[2].trim());
             if (!CODIGO.matcher(codigo).matches()) {
                 erros.add("linha " + numero + " com código inválido");
                 continue;
@@ -310,16 +325,29 @@ public class CargaPricetabService {
                 erros.add("linha " + numero + " sem descrição");
                 continue;
             }
-            if (!PRECO.matcher(preco).matches() || Long.parseLong(preco) > Integer.MAX_VALUE) {
+            if (preco == null) {
                 erros.add("linha " + numero + " com preço inválido");
                 continue;
             }
             if (descricao.length() > MAX_DESCRICAO) {
                 descricao = descricao.substring(0, MAX_DESCRICAO).stripTrailing();
             }
-            itens.add(new Item(codigo, descricao, Integer.parseInt(preco)));
+            itens.add(new Item(codigo, descricao, preco));
         }
         return new Interpretacao(itens, total, erros);
+    }
+
+    // "0000000389" (centavos, arquivo simulado) ou "3,89" / "1.234,56" (reais, arquivo real).
+    static Integer precoEmCentavos(String preco) {
+        long centavos;
+        if (PRECO.matcher(preco).matches()) {
+            centavos = Long.parseLong(preco);
+        } else if (PRECO_REAIS.matcher(preco).matches()) {
+            centavos = Long.parseLong(preco.replace(".", "").replace(",", ""));
+        } else {
+            return null;
+        }
+        return centavos > Integer.MAX_VALUE ? null : (int) centavos;
     }
 
     // Supabase grátis tem 500 MB: das cargas antigas fica só o resumo.

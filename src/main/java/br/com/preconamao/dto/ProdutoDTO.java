@@ -10,7 +10,12 @@ public class ProdutoDTO {
 
     private String codigoBarras;
 
+    // Descrição com as abreviações por extenso (a que o app mostra e fala).
     private String descricao;
+
+    // Como veio do PRICETAB, quando é diferente da descrição acima (o app mostra pequena, embaixo,
+    // para o cliente conferir com a etiqueta da gôndola); nula quando não há o que expandir.
+    private String descricaoOriginal;
 
     private Integer precoCentavos;
 
