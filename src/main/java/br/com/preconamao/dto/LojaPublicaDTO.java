@@ -28,4 +28,10 @@ public class LojaPublicaDTO {
     // Saída: até onde a escolha continua valendo (o app só tira a loja com leituras fora dele).
     private int raioSaidaM;
 
+    // De onde vêm os preços (PRICETAB ou API) e o nome da ficha do formato: o seletor de loja do
+    // ambiente de testes mostra, para saber de onde vem cada preço.
+    private String origem;
+
+    private String formato;
+
 }

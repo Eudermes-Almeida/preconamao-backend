@@ -82,4 +82,27 @@ public class CargaPricetabEntity {
     @Column(name = "mensagem", columnDefinition = "TEXT")
     private String mensagem;
 
+    // ---- Multi-loja (scripts/027) ----
+
+    // PRICETAB (agente da loja) ou API (coleta do servidor).
+    @Column(name = "origem", nullable = false, length = 10)
+    private String origem;
+
+    // Nome da cópia enviada pelo agente (PRICETAB_<loja>_<data-hora>.TXT): confere com a chave.
+    @Column(name = "nome_arquivo", length = 120)
+    private String nomeArquivo;
+
+    // Onde o arquivo ficou no armazenamento (o conteúdo não fica mais no banco).
+    @Column(name = "caminho_arquivo", length = 200)
+    private String caminhoArquivo;
+
+    @Column(name = "linhas_sem_preco")
+    private Integer linhasSemPreco;
+
+    @Column(name = "codigos_repetidos")
+    private Integer codigosRepetidos;
+
+    @Column(name = "conflitos_preco")
+    private Integer conflitosPreco;
+
 }

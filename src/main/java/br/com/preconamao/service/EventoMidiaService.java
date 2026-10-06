@@ -9,6 +9,7 @@ import br.com.preconamao.dto.RelatorioMidiasDTO;
 import br.com.preconamao.dto.RelatorioOfertaDTO;
 import br.com.preconamao.entity.EventoMidiaEntity;
 import br.com.preconamao.entity.InstalacaoAppEntity;
+import br.com.preconamao.entity.LojaEntity;
 import io.quarkus.logging.Log;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -88,6 +89,7 @@ public class EventoMidiaService {
                 .getSingleResult();
         long vagas = MAX_EVENTOS_POR_APARELHO - recentes;
 
+        Integer loja = lojaDoApp(lote.getLojaId());
         int gravados = 0;
         for (EventoMidiaDTO evento : lote.getEventos()) {
             if (gravados >= vagas) {
@@ -100,7 +102,7 @@ public class EventoMidiaService {
                 continue;
             }
             entityManager.persist(EventoMidiaEntity.builder()
-                    .lojaId(lojaPadraoId)
+                    .lojaId(loja)
                     .tipo(evento.getTipo())
                     .origem(evento.getOrigem())
                     .codigoBarras(evento.getCodigoBarras())
@@ -123,12 +125,12 @@ public class EventoMidiaService {
         }
         long jaRegistrado = entityManager.createQuery(
                         "SELECT COUNT(i) FROM InstalacaoAppEntity i WHERE i.lojaId = :loja AND i.aparelhoId = :aparelho", Long.class)
-                .setParameter("loja", lojaPadraoId)
+                .setParameter("loja", lojaDoApp(instalacao.getLojaId()))
                 .setParameter("aparelho", aparelho)
                 .getSingleResult();
         if (jaRegistrado == 0) {
             entityManager.persist(InstalacaoAppEntity.builder()
-                    .lojaId(lojaPadraoId)
+                    .lojaId(lojaDoApp(instalacao.getLojaId()))
                     .aparelhoId(aparelho)
                     .origem(instalacao.getOrigem())
                     .plataforma(instalacao.getPlataforma())
@@ -142,8 +144,10 @@ public class EventoMidiaService {
     // Relatório
     // ------------------------------------------------------------------------------------------
 
+    // Relatório de uma ou mais lojas (chave da loja = ela; da rede = as da rede; geral = todas —
+    // regra 6 do multi-loja). A Família não tem loja: só entra com a chave geral (comFamilia).
     @Transactional
-    public RelatorioMidiasDTO relatorio(Integer lojaId, String periodo) {
+    public RelatorioMidiasDTO relatorio(List<Integer> lojas, String periodo, boolean comFamilia) {
         OffsetDateTime ate = OffsetDateTime.now();
         OffsetDateTime de = LocalDate.now(FUSO_LOJA).minusDays(PERIODOS.get(periodo) - 1L)
                 .atStartOfDay(FUSO_LOJA).toOffsetDateTime();
@@ -153,9 +157,9 @@ public class EventoMidiaService {
         // Contagem por oferta, tipo e origem: eventos e aparelhos distintos.
         List<Object[]> porOrigem = entityManager.createQuery(
                         "SELECT e.codigoBarras, e.tipo, e.origem, COUNT(e), COUNT(DISTINCT e.aparelhoId) "
-                                + "FROM EventoMidiaEntity e WHERE e.lojaId = :loja AND e.registradoEm >= :de "
+                                + "FROM EventoMidiaEntity e WHERE e.lojaId IN :lojas AND e.registradoEm >= :de "
                                 + "GROUP BY e.codigoBarras, e.tipo, e.origem", Object[].class)
-                .setParameter("loja", lojaId)
+                .setParameter("lojas", lojas)
                 .setParameter("de", de)
                 .getResultList();
         for (Object[] linha : porOrigem) {
@@ -185,9 +189,9 @@ public class EventoMidiaService {
         // pela tela e pelo anúncio conta uma vez).
         List<Object[]> distintos = entityManager.createQuery(
                         "SELECT e.codigoBarras, e.tipo, COUNT(DISTINCT e.aparelhoId) "
-                                + "FROM EventoMidiaEntity e WHERE e.lojaId = :loja AND e.registradoEm >= :de "
+                                + "FROM EventoMidiaEntity e WHERE e.lojaId IN :lojas AND e.registradoEm >= :de "
                                 + "GROUP BY e.codigoBarras, e.tipo", Object[].class)
-                .setParameter("loja", lojaId)
+                .setParameter("lojas", lojas)
                 .setParameter("de", de)
                 .getResultList();
         for (Object[] linha : distintos) {
@@ -205,15 +209,15 @@ public class EventoMidiaService {
 
         long aparelhos = entityManager.createQuery(
                         "SELECT COUNT(DISTINCT e.aparelhoId) FROM EventoMidiaEntity e "
-                                + "WHERE e.lojaId = :loja AND e.registradoEm >= :de", Long.class)
-                .setParameter("loja", lojaId)
+                                + "WHERE e.lojaId IN :lojas AND e.registradoEm >= :de", Long.class)
+                .setParameter("lojas", lojas)
                 .setParameter("de", de)
                 .getSingleResult();
 
         List<EventoMidiaEntity> ultimos = entityManager.createQuery(
-                        "SELECT e FROM EventoMidiaEntity e WHERE e.lojaId = :loja AND e.registradoEm >= :de "
+                        "SELECT e FROM EventoMidiaEntity e WHERE e.lojaId IN :lojas AND e.registradoEm >= :de "
                                 + "ORDER BY e.registradoEm DESC, e.id DESC", EventoMidiaEntity.class)
-                .setParameter("loja", lojaId)
+                .setParameter("lojas", lojas)
                 .setParameter("de", de)
                 .setMaxResults(EVENTOS_RECENTES)
                 .getResultList();
@@ -239,17 +243,17 @@ public class EventoMidiaService {
                         .codigoBarras(e.getCodigoBarras())
                         .descricao(descricoes.get(e.getCodigoBarras()))
                         .build()).toList())
-                .instalacoes(instalacoes(lojaId, de))
-                .familia(familiaService.relatorio(lojaId, de))
+                .instalacoes(instalacoes(lojas, de))
+                .familia(comFamilia ? familiaService.relatorio(lojaPadraoId, de) : null)
                 .build();
     }
 
-    private RelatorioInstalacoesDTO instalacoes(Integer lojaId, OffsetDateTime de) {
+    private RelatorioInstalacoesDTO instalacoes(List<Integer> lojas, OffsetDateTime de) {
         RelatorioInstalacoesDTO resumo = new RelatorioInstalacoesDTO();
         entityManager.createQuery(
                         "SELECT i.origem, i.plataforma, COUNT(i) FROM InstalacaoAppEntity i "
-                                + "WHERE i.lojaId = :loja AND i.registradoEm >= :de GROUP BY i.origem, i.plataforma", Object[].class)
-                .setParameter("loja", lojaId)
+                                + "WHERE i.lojaId IN :lojas AND i.registradoEm >= :de GROUP BY i.origem, i.plataforma", Object[].class)
+                .setParameter("lojas", lojas)
                 .setParameter("de", de)
                 .getResultList()
                 .forEach(linha -> {
@@ -324,5 +328,16 @@ public class EventoMidiaService {
         } catch (IllegalArgumentException e) {
             return null;
         }
+    }
+
+    // Loja que o app informou (multi-loja, regra 23d), se existir e estiver ativa; senão a padrão.
+    private Integer lojaDoApp(Integer lojaId) {
+        if (lojaId != null) {
+            LojaEntity loja = entityManager.find(LojaEntity.class, lojaId);
+            if (loja != null && loja.isAtiva()) {
+                return lojaId;
+            }
+        }
+        return lojaPadraoId;
     }
 }

@@ -17,5 +17,7 @@ public class InstalacaoAppDTO {
 
     // ANDROID, IOS ou OUTRA.
     private String plataforma;
+    // Loja escolhida no app (multi-loja); ausente (app antigo) = loja padrão.
+    private Integer lojaId;
 
 }

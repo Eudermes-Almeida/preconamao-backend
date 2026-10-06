@@ -5,6 +5,7 @@ import br.com.preconamao.dto.SinalRespostaDTO;
 import br.com.preconamao.dto.SituacaoLojaDTO;
 import br.com.preconamao.entity.CargaPricetabEntity;
 import br.com.preconamao.entity.LojaEntity;
+import br.com.preconamao.entity.ProdutoEntity;
 import io.quarkus.logging.Log;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import io.quarkus.scheduler.Scheduled;
@@ -14,44 +15,48 @@ import jakarta.json.bind.Jsonb;
 import jakarta.json.bind.JsonbBuilder;
 import jakarta.persistence.EntityManager;
 import jakarta.transaction.Transactional;
-import org.eclipse.microprofile.config.inject.ConfigProperty;
 
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.time.OffsetDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-// Carga automática do PRICETAB enviada pelo agente da loja. Recebe e guarda na hora (o agente não
-// espera o processamento); um agendador aplica as cargas pendentes, uma de cada vez, cada uma numa
-// transação: ou entra inteira, ou nada muda (ver aplicar_carga_pricetab() no script 016).
+// Cargas de preços das lojas. PRICETAB: o agente da loja envia e o servidor guarda na hora (o
+// agente não espera o processamento). API: o coletor (ColetaApiService) busca os dados e registra
+// a carga do mesmo jeito. Um agendador aplica as cargas pendentes, UMA de cada vez no servidor
+// inteiro e só a mais nova de cada loja (regras 11a–11e do multi-loja), cada uma numa transação:
+// ou entra inteira, ou nada muda (ver aplicar_carga() no scripts/027).
 @ApplicationScoped
 public class CargaPricetabService {
 
-    // 15 mil linhas dão ~1 MB; 10 MB sobra e barra envio absurdo.
+    // 27 mil linhas dão ~1,6 MB; 10 MB sobra e barra envio absurdo.
     public static final int TAMANHO_MAXIMO_BYTES = 10 * 1024 * 1024;
 
-    // Dois formatos, reconhecidos linha a linha:
-    //   simulado (Gertec):   CODIGO|DESCRICAO(40)|PRECO(10 dígitos, centavos)||
-    //   real (PRICE2.TXT):   CODIGO|DESCRICAO(40)|12,99|          (preço em reais, com vírgula)
+    // Acima disso de linhas com erro de ESTRUTURA (código inválido, preço ilegível, campo
+    // faltando), o arquivo não segue o formato da loja: carga RETIDA (regra 8c). Abreviação
+    // desconhecida, preço 0,00 e código repetido NÃO contam (regras 9, 18, 19).
+    private static final double MAXIMO_LINHAS_COM_ERRO = 0.02;
+    // Uma carga grande (hipermercado: ~28 mil linhas, primeira carga) passa do tempo padrão de 60 s
+    // da transação.
+    private static final int TEMPO_MAXIMO_CARGA_S = 600;
+    // Arquivos guardados por loja: os 3 últimos recebidos e sempre o último aplicado (regra 10d).
+    private static final int ARQUIVOS_GUARDADOS = 3;
+
     private static final Pattern CODIGO = Pattern.compile("\\d{1,14}");
     private static final Pattern PRECO = Pattern.compile("\\d{1,10}");
     private static final Pattern PRECO_REAIS = Pattern.compile("\\d{1,3}(\\.?\\d{3})*,\\d{2}");
-    // Começo de registro: a linha que não começa assim é continuação da anterior (no arquivo real,
-    // algumas descrições vêm cortadas por uma quebra de linha no meio).
-    private static final Pattern INICIO_REGISTRO = Pattern.compile("^\\d{1,14}\\|.*");
-    private static final Pattern REGISTRO_COMPLETO = Pattern.compile("^\\d{1,14}\\|.*\\|[\\d.,]+\\|\\|?$");
-    private static final int MAX_DESCRICAO = 40;
     private static final int MAX_ERROS_NA_MENSAGEM = 20;
-    private static final int CARGAS_COM_ARQUIVO_GUARDADO = 30;
-
-    // Fração dos produtos ativos que, se sumir do arquivo, retém a carga (arquivo cortado/vazio).
-    @ConfigProperty(name = "carga.limite-inativacao", defaultValue = "0.20")
-    BigDecimal limiteInativacao;
+    // Nome da cópia enviada pelo agente (regra 7b): PRICETAB_<loja>_<AAAA-MM-DD_HHMM>.TXT.
+    private static final Pattern NOME_ARQUIVO = Pattern.compile(
+            "(?i)^PRICETAB_([a-z0-9]+(?:-[a-z0-9]+)*)_\\d{4}-\\d{2}-\\d{2}_\\d{4,6}\\.TXT$");
+    private static final DateTimeFormatter CARIMBO = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss");
 
     @Inject
     EntityManager entityManager;
@@ -59,12 +64,24 @@ public class CargaPricetabService {
     @Inject
     LojaService lojaService;
 
+    @Inject
+    ArmazenamentoArquivos armazenamento;
+
     private final Jsonb jsonb = JsonbBuilder.create();
 
-    record Item(String codigo, String descricao, int preco) {
+    // Uma linha do arquivo já interpretada (código como veio da origem).
+    record Linha(String codigoOrigem, String descricao, int preco) {
     }
 
-    record Interpretacao(List<Item> itens, int linhasTotal, List<String> erros) {
+    // Um produto pronto para aplicar: código canônico; semPreco = ZERO / CONFLITO / null.
+    record Item(String codigo, String codigoOrigem, String descricao, int preco, String semPreco) {
+    }
+
+    // linhasFisicas / linhasFisicasComErro: linhas do ARQUIVO (não registros). Um registro com erro
+    // que emendou várias linhas conta todas: 300 linhas de lixo seguidas são 300 linhas com erro,
+    // não 1 (senão a regra dos 2% não pegaria o arquivo corrompido).
+    record Interpretacao(List<Item> itens, int linhasTotal, List<String> erros, int codigosRepetidos,
+                         int conflitosPreco, int semPrecoZero, int linhasFisicas, int linhasFisicasComErro) {
     }
 
     // ------------------------------------------------------------------------------------------
@@ -72,11 +89,11 @@ public class CargaPricetabService {
     // ------------------------------------------------------------------------------------------
 
     @Transactional
-    public CargaRecebidaDTO receber(LojaEntity loja, byte[] arquivo) {
+    public CargaRecebidaDTO receber(LojaEntity loja, byte[] arquivo, String nomeArquivo) {
         String hash = LojaService.sha256(arquivo);
         LojaEntity lojaAtual = entityManager.find(LojaEntity.class, loja.getId());
         lojaAtual.setUltimoSinalEm(OffsetDateTime.now());
-        lojaAtual.setHashInformado(hash);
+        lojaService.registrarHashInformado(lojaAtual, hash);
 
         if (hash.equals(lojaAtual.getHashAplicado())) {
             return CargaRecebidaDTO.builder().situacao("JA_APLICADO")
@@ -86,32 +103,88 @@ public class CargaPricetabService {
         // com a última — um arquivo que volta a uma versão antiga (preço que foi e voltou) é carga nova.
         CargaPricetabEntity ultima = ultimaCarga(loja.getId());
         if (ultima != null && hash.equals(ultima.getHash())) {
+            if (reenfileirarSeLiberada(lojaAtual, ultima)) {
+                return paraDTO(ultima, "Carga liberada: reprocessando em alguns segundos.");
+            }
             return paraDTO(ultima, "Este arquivo já foi recebido (carga nº " + ultima.getId() + ").");
         }
 
-        CargaPricetabEntity carga = CargaPricetabEntity.builder()
-                .lojaId(loja.getId())
-                .recebidaEm(OffsetDateTime.now())
-                .hash(hash)
-                .tamanhoBytes(arquivo.length)
-                .arquivo(arquivo)
-                .situacao(CargaPricetabEntity.RECEBIDA)
-                .build();
-        entityManager.persist(carga);
+        CargaPricetabEntity carga = registrar(lojaAtual, CargaPricetabEntity.RECEBIDA, "PRICETAB", nomeArquivo,
+                arquivo, hash, ".txt");
+
+        // Regra 7c: o nome da cópia não bate com a loja da chave (configuração trocada na
+        // instalação: os preços de uma loja iriam para a outra). Nada é aplicado.
+        String lojaDoNome = lojaDoNome(nomeArquivo);
+        if (nomeArquivo != null && !Objects.equals(lojaDoNome, lojaAtual.getSlug())) {
+            carga.setSituacao(CargaPricetabEntity.RETIDA);
+            carga.setProcessadaEm(OffsetDateTime.now());
+            carga.setMensagem("RETIDA: o nome do arquivo (" + nomeArquivo + ") não corresponde à loja da chave ("
+                    + lojaAtual.getSlug() + "). Nada foi aplicado. Confira a configuração do agente desta loja.");
+            Log.warnf("Carga %d da loja %d RETIDA: nome %s x loja %s", carga.getId(), lojaAtual.getId(),
+                    nomeArquivo, lojaAtual.getSlug());
+            return paraDTO(carga, carga.getMensagem());
+        }
+
         CargaRecebidaDTO dto = paraDTO(carga, "Recebido; processamento em alguns segundos.");
         dto.setNovaCarga(true);
         return dto;
     }
 
-    // Sinal de vida do agente (a cada poucos minutos). enviarArquivo = o servidor não tem o arquivo
-    // que o agente tem (envio perdido): o agente manda de novo.
+    // Grava o arquivo no armazenamento e a ficha da carga no banco.
+    public CargaPricetabEntity registrar(LojaEntity loja, String situacao, String origem, String nomeArquivo,
+                                         byte[] conteudo, String hash, String extensao) {
+        String nomeGuardado = OffsetDateTime.now().format(CARIMBO) + "_" + hash.substring(0, 12) + extensao;
+        CargaPricetabEntity carga = CargaPricetabEntity.builder()
+                .lojaId(loja.getId())
+                .recebidaEm(OffsetDateTime.now())
+                .hash(hash)
+                .tamanhoBytes(conteudo.length)
+                .origem(origem)
+                .nomeArquivo(nomeArquivo)
+                .caminhoArquivo(armazenamento.salvar(loja.getId(), nomeGuardado, conteudo))
+                .situacao(situacao)
+                .build();
+        entityManager.persist(carga);
+        return carga;
+    }
+
+    // Regra 26b: a carga ficou RETIDA pela regra dos 20% (ou pelo formato) e alguém ligou "liberar
+    // a próxima carga" (troca de sistema da loja): o agente não reenvia o mesmo arquivo (já foi
+    // recebido), então a própria carga retida volta para a fila. A retida por nome que não confere
+    // com a chave (regra 7c) NUNCA volta: é configuração errada na loja.
+    private boolean reenfileirarSeLiberada(LojaEntity loja, CargaPricetabEntity carga) {
+        boolean nomeConfere = carga.getNomeArquivo() == null || Objects.equals(lojaDoNome(carga.getNomeArquivo()), loja.getSlug());
+        if (!loja.isLiberarProximaCarga() || !CargaPricetabEntity.RETIDA.equals(carga.getSituacao()) || !nomeConfere
+                || carga.getCaminhoArquivo() == null) {
+            return false;
+        }
+        carga.setSituacao(CargaPricetabEntity.RECEBIDA);
+        carga.setProcessadaEm(null);
+        carga.setMensagem(null);
+        Log.infof("Carga %d da loja %d liberada: volta para a fila", carga.getId(), loja.getId());
+        return true;
+    }
+
+    static String lojaDoNome(String nomeArquivo) {
+        if (nomeArquivo == null) {
+            return null;
+        }
+        Matcher m = NOME_ARQUIVO.matcher(nomeArquivo.trim());
+        return m.matches() ? m.group(1).toLowerCase() : null;
+    }
+
+    // Sinal de vida do agente (a cada minuto). enviarArquivo = o servidor não tem o arquivo que o
+    // agente tem (envio perdido): o agente manda de novo.
     @Transactional
     public SinalRespostaDTO registrarSinal(LojaEntity loja, String hashArquivo) {
         LojaEntity lojaAtual = entityManager.find(LojaEntity.class, loja.getId());
         lojaAtual.setUltimoSinalEm(OffsetDateTime.now());
-        lojaAtual.setHashInformado(hashArquivo);
+        lojaService.registrarHashInformado(lojaAtual, hashArquivo);
 
         CargaPricetabEntity ultima = ultimaCarga(loja.getId());
+        if (ultima != null && Objects.equals(hashArquivo, ultima.getHash())) {
+            reenfileirarSeLiberada(lojaAtual, ultima);
+        }
         boolean enviarArquivo = hashArquivo != null
                 && !hashArquivo.equals(lojaAtual.getHashAplicado())
                 && (ultima == null || !hashArquivo.equals(ultima.getHash()));
@@ -138,10 +211,9 @@ public class CargaPricetabService {
     public SituacaoLojaDTO situacaoLoja(Integer lojaId) {
         LojaEntity loja = entityManager.find(LojaEntity.class, lojaId);
         boolean aplicado = loja.getHashAplicado() != null && loja.getHashAplicado().equals(loja.getHashInformado());
-        boolean confiavel = loja.getLimiteSemSinalMin() == null || (lojaService.sinalRecente(loja) && aplicado);
         return SituacaoLojaDTO.builder()
                 .loja(loja.getNome())
-                .precoConfiavel(confiavel)
+                .precoConfiavel(lojaService.situacaoPreco(loja).confiavel())
                 .limiteSemSinalMin(loja.getLimiteSemSinalMin())
                 .ultimoSinalEm(loja.getUltimoSinalEm() == null ? null : loja.getUltimoSinalEm().toString())
                 .arquivoAplicado(aplicado)
@@ -167,13 +239,13 @@ public class CargaPricetabService {
         while (true) {
             Long processada;
             try {
-                processada = QuarkusTransaction.requiringNew().call(this::processarProxima);
+                processada = QuarkusTransaction.requiringNew().timeout(TEMPO_MAXIMO_CARGA_S).call(this::processarProxima);
             } catch (FalhaCarga falha) {
-                Log.errorf(falha.getCause(), "Carga %d do PRICETAB falhou", falha.cargaId);
+                Log.errorf(falha.getCause(), "Carga %d falhou", falha.cargaId);
                 QuarkusTransaction.requiringNew().run(() -> marcarErro(falha.cargaId, falha.getCause()));
                 continue;
             } catch (Exception e) {
-                Log.error("Falha inesperada ao processar carga do PRICETAB", e);
+                Log.error("Falha inesperada ao processar carga", e);
                 return;
             }
             if (processada == null) {
@@ -210,7 +282,7 @@ public class CargaPricetabService {
                                     + "c.mensagem = :mensagem WHERE c.lojaId = :loja AND c.situacao = :recebida AND c.id < :id")
                     .setParameter("ignorada", CargaPricetabEntity.IGNORADA)
                     .setParameter("agora", OffsetDateTime.now())
-                    .setParameter("mensagem", "Substituída pela carga nº " + carga.getId() + ", mais nova.")
+                    .setParameter("mensagem", "IGNORADA – substituída pela carga nº " + carga.getId() + ", mais nova.")
                     .setParameter("loja", carga.getLojaId())
                     .setParameter("recebida", CargaPricetabEntity.RECEBIDA)
                     .setParameter("id", carga.getId())
@@ -232,39 +304,74 @@ public class CargaPricetabService {
         }
     }
 
+    @SuppressWarnings("unchecked")
     void aplicar(CargaPricetabEntity carga) {
-        Interpretacao interpretacao = interpretar(carga.getArquivo());
-        carga.setLinhasTotal(interpretacao.linhasTotal());
-        carga.setLinhasInvalidas(interpretacao.erros().size());
+        LojaEntity loja = entityManager.find(LojaEntity.class, carga.getLojaId());
+        byte[] conteudo = carga.getCaminhoArquivo() != null ? armazenamento.ler(carga.getCaminhoArquivo()) : carga.getArquivo();
         carga.setProcessadaEm(OffsetDateTime.now());
 
-        String errosTexto = interpretacao.erros().isEmpty() ? "" : "\nLinhas ignoradas: "
-                + String.join("; ", interpretacao.erros().subList(0, Math.min(MAX_ERROS_NA_MENSAGEM, interpretacao.erros().size())))
-                + (interpretacao.erros().size() > MAX_ERROS_NA_MENSAGEM ? " ..." : "");
+        List<Map<String, Object>> itens;
+        String errosTexto = "";
+        if (LojaEntity.ORIGEM_API.equals(carga.getOrigem())) {
+            // A coleta já entrega os itens no formato padrão (ColetaApiService).
+            itens = jsonb.fromJson(new String(conteudo, StandardCharsets.UTF_8), List.class);
+            carga.setLinhasTotal(itens.size());
+            carga.setLinhasInvalidas(0);
+            carga.setLinhasSemPreco((int) itens.stream().filter(i -> i.get("semPreco") != null).count());
+            carga.setCodigosRepetidos(0);
+            carga.setConflitosPreco(0);
+        } else {
+            Interpretacao interpretacao = interpretar(conteudo, FormatoPricetab.de(lojaService.formato(loja)));
+            carga.setLinhasTotal(interpretacao.linhasTotal());
+            carga.setLinhasInvalidas(interpretacao.erros().size());
+            carga.setLinhasSemPreco(interpretacao.semPrecoZero());
+            carga.setCodigosRepetidos(interpretacao.codigosRepetidos());
+            carga.setConflitosPreco(interpretacao.conflitosPreco());
+            errosTexto = interpretacao.erros().isEmpty() ? "" : "\nLinhas ignoradas: "
+                    + String.join("; ", interpretacao.erros().subList(0, Math.min(MAX_ERROS_NA_MENSAGEM, interpretacao.erros().size())))
+                    + (interpretacao.erros().size() > MAX_ERROS_NA_MENSAGEM ? " ..." : "");
 
-        List<Map<String, Object>> itens = interpretacao.itens().stream().map(item -> {
-            Map<String, Object> mapa = new LinkedHashMap<>();
-            mapa.put("codigo", item.codigo());
-            mapa.put("descricao", item.descricao());
-            mapa.put("preco", item.preco());
-            return mapa;
-        }).toList();
+            if (interpretacao.linhasFisicas() > 0
+                    && (double) interpretacao.linhasFisicasComErro() / interpretacao.linhasFisicas() > MAXIMO_LINHAS_COM_ERRO) {
+                carga.setSituacao(CargaPricetabEntity.RETIDA);
+                carga.setMensagem(String.format("RETIDA: %d de %d linhas do arquivo (%s) não seguem o formato cadastrado "
+                                + "da loja (limite: 2%%). Arquivo corrompido, ou a loja trocou de sistema? Nada foi alterado.",
+                        interpretacao.linhasFisicasComErro(), interpretacao.linhasFisicas(),
+                        percentual((double) interpretacao.linhasFisicasComErro() / interpretacao.linhasFisicas())) + errosTexto);
+                return;
+            }
+            itens = interpretacao.itens().stream().map(item -> {
+                Map<String, Object> mapa = new LinkedHashMap<>();
+                mapa.put("codigo", item.codigo());
+                mapa.put("codigoOrigem", item.codigoOrigem());
+                mapa.put("descricao", item.descricao());
+                mapa.put("preco", item.preco());
+                mapa.put("semPreco", item.semPreco());
+                return mapa;
+            }).toList();
+        }
 
+        boolean liberada = loja.isLiberarProximaCarga();
         String resultadoJson = (String) entityManager.createNativeQuery(
-                        "SELECT CAST(aplicar_carga_pricetab(CAST(:itens AS jsonb), :limite) AS text)")
+                        "SELECT CAST(aplicar_carga(:loja, CAST(:itens AS jsonb), :limite, :forcar) AS text)")
+                .setParameter("loja", loja.getId())
                 .setParameter("itens", jsonb.toJson(itens))
-                .setParameter("limite", limiteInativacao)
+                .setParameter("limite", loja.getLimiteInativacao())
+                .setParameter("forcar", liberada)
                 .getSingleResult();
-        @SuppressWarnings("unchecked")
         Map<String, Object> resultado = jsonb.fromJson(resultadoJson, Map.class);
 
         if (Boolean.TRUE.equals(resultado.get("retida"))) {
+            int sumiriam = inteiro(resultado.get("sumiriam"));
+            int ativos = inteiro(resultado.get("ativos"));
             carga.setSituacao(CargaPricetabEntity.RETIDA);
-            carga.setMensagem(String.format(
-                    "RETIDA por segurança: o arquivo tem %s produto(s) válido(s) e %s dos %s produtos ativos "
-                            + "sumiriam (limite: %s%%). Arquivo cortado ou vazio? Nada foi alterado.",
-                    resultado.get("itens"), resultado.get("sumiriam"), resultado.get("ativos"),
-                    limiteInativacao.movePointRight(2).stripTrailingZeros().toPlainString()) + errosTexto);
+            carga.setMensagem((ativos == 0 && inteiro(resultado.get("itens")) == 0
+                    ? "RETIDA: o arquivo não tem nenhum produto válido. Nada foi alterado."
+                    : String.format("RETIDA por segurança: desativaria %d de %d produtos (%s). Limite da loja: %s. "
+                                    + "Arquivo cortado, ou a loja trocou de sistema (nesse caso, liberar a próxima carga). "
+                                    + "Nada foi alterado.", sumiriam, ativos,
+                            percentual(ativos == 0 ? 0 : (double) sumiriam / ativos),
+                            percentual(loja.getLimiteInativacao().doubleValue()))) + errosTexto);
             return;
         }
 
@@ -274,21 +381,41 @@ public class CargaPricetabService {
         carga.setDescricoesAlteradas(inteiro(resultado.get("descricoesAlteradas")));
         carga.setInativados(inteiro(resultado.get("inativados")));
         carga.setReativados(inteiro(resultado.get("reativados")));
+        String extras = (carga.getLinhasSemPreco() > 0 ? String.format(" %d sem preço (0,00).", carga.getLinhasSemPreco()) : "")
+                + (carga.getCodigosRepetidos() > 0 ? String.format(" %d código(s) repetido(s), %d com preços diferentes "
+                + "(ficam sem preço).", carga.getCodigosRepetidos(), carga.getConflitosPreco()) : "")
+                + (liberada ? " Carga LIBERADA manualmente" + (loja.getLiberadaPor() == null ? "" : " por " + loja.getLiberadaPor())
+                + (loja.getLiberadaEm() == null ? "" : " em " + loja.getLiberadaEm()) + "." : "");
         carga.setMensagem(String.format("%d novo(s), %d preço(s) alterado(s), %d descrição(ões) alterada(s), "
                         + "%d inativado(s), %d reativado(s).", carga.getNovos(), carga.getPrecosAlterados(),
-                carga.getDescricoesAlteradas(), carga.getInativados(), carga.getReativados()) + errosTexto);
+                carga.getDescricoesAlteradas(), carga.getInativados(), carga.getReativados()) + extras + errosTexto);
 
-        LojaEntity loja = entityManager.find(LojaEntity.class, carga.getLojaId());
+        if (liberada) {
+            loja.setLiberarProximaCarga(false);
+        }
         loja.setHashAplicado(carga.getHash());
+        lojaService.atualizarDivergencia(loja);
     }
 
-    // Linha inválida é ignorada e listada; não derruba a carga (a regra dos 20% cobre o arquivo
-    // estragado de verdade).
-    Interpretacao interpretar(byte[] arquivo) {
-        String texto = new String(arquivo, StandardCharsets.ISO_8859_1);
-        List<Item> itens = new ArrayList<>();
+    private static String percentual(double fracao) {
+        return BigDecimal.valueOf(fracao * 100).setScale(1, java.math.RoundingMode.HALF_UP).stripTrailingZeros().toPlainString() + "%";
+    }
+
+    // Lê o arquivo conforme a ficha da loja. Linha com erro de estrutura é ignorada e listada; não
+    // derruba a carga sozinha (o limite de 2% e a regra dos 20% cobrem o arquivo estragado).
+    Interpretacao interpretar(byte[] arquivo, FormatoPricetab formato) {
+        String texto = new String(arquivo, formato.codificacao());
+        String sep = Pattern.quote(formato.separador());
+        // Começo de registro: a linha que não começa assim é continuação da anterior (algumas
+        // descrições vêm cortadas por uma quebra de linha no meio).
+        Pattern inicioRegistro = Pattern.compile("^\\d{1,14}" + sep + ".*");
+        Pattern registroCompleto = Pattern.compile("^\\d{1,14}" + sep + ".*" + sep + "[\\d.,]+" + sep + "(" + sep + ")?$");
+
+        List<Linha> linhasValidas = new ArrayList<>();
         List<String> erros = new ArrayList<>();
         int total = 0;
+        int fisicas = 0;
+        int fisicasComErro = 0;
         String[] linhas = texto.split("\r?\n");
         for (int i = 0; i < linhas.length; i++) {
             String linha = linhas[i].stripTrailing();
@@ -297,21 +424,27 @@ public class CargaPricetabService {
             }
             total++;
             int numero = i + 1;
+            int inicio = i;
             // Registro cortado por quebra de linha: emenda as linhas seguintes que não começam um
-            // registro novo (a quebra cai no meio da descrição de 40 posições, então emenda sem espaço).
-            while (!REGISTRO_COMPLETO.matcher(linha).matches() && i + 1 < linhas.length
-                    && !linhas[i + 1].isBlank() && !INICIO_REGISTRO.matcher(linhas[i + 1]).matches()) {
+            // registro novo (a quebra cai no meio da descrição, então emenda sem espaço).
+            while (formato.emendarLinhas() && !registroCompleto.matcher(linha).matches() && i + 1 < linhas.length
+                    && !linhas[i + 1].isBlank() && !inicioRegistro.matcher(linhas[i + 1]).matches()) {
                 linha = linha + linhas[++i].stripTrailing();
             }
-            String semFinal = linha.endsWith("||") ? linha.substring(0, linha.length() - 2)
-                    : linha.endsWith("|") ? linha.substring(0, linha.length() - 1) : null;
+            int consumidas = i - inicio + 1;
+            fisicas += consumidas;
+            String fim = formato.separador();
+            String semFinal = linha.endsWith(fim + fim) ? linha.substring(0, linha.length() - 2 * fim.length())
+                    : linha.endsWith(fim) ? linha.substring(0, linha.length() - fim.length()) : null;
             if (semFinal == null) {
-                erros.add("linha " + numero + " não termina com |");
+                erros.add("linha " + numero + " não termina com " + fim);
+                fisicasComErro += consumidas;
                 continue;
             }
-            String[] partes = semFinal.split("\\|", -1);
+            String[] partes = semFinal.split(sep, -1);
             if (partes.length != 3) {
                 erros.add("linha " + numero + " não tem 3 campos");
+                fisicasComErro += consumidas;
                 continue;
             }
             String codigo = partes[0].trim();
@@ -319,22 +452,63 @@ public class CargaPricetabService {
             Integer preco = precoEmCentavos(partes[2].trim());
             if (!CODIGO.matcher(codigo).matches()) {
                 erros.add("linha " + numero + " com código inválido");
+                fisicasComErro += consumidas;
                 continue;
             }
             if (descricao.isEmpty()) {
                 erros.add("linha " + numero + " sem descrição");
+                fisicasComErro += consumidas;
                 continue;
             }
             if (preco == null) {
                 erros.add("linha " + numero + " com preço inválido");
+                fisicasComErro += consumidas;
                 continue;
             }
-            if (descricao.length() > MAX_DESCRICAO) {
-                descricao = descricao.substring(0, MAX_DESCRICAO).stripTrailing();
+            if (descricao.length() > formato.tamanhoDescricao()) {
+                descricao = descricao.substring(0, formato.tamanhoDescricao()).stripTrailing();
             }
-            itens.add(new Item(codigo, descricao, preco));
+            linhasValidas.add(new Linha(codigo, descricao, preco));
         }
-        return new Interpretacao(itens, total, erros);
+        Interpretacao resolvida = resolverRepetidos(linhasValidas, total, erros);
+        return new Interpretacao(resolvida.itens(), total, erros, resolvida.codigosRepetidos(), resolvida.conflitosPreco(),
+                resolvida.semPrecoZero(), fisicas, fisicasComErro);
+    }
+
+    // Código repetido no arquivo, já padronizado (regras 17 e 19): preço igual = um só; um com
+    // preço e outro 0,00 = o que tem preço; preços diferentes acima de zero = SEM PREÇO (não dá
+    // para saber qual a loja cobra), com a descrição da última linha.
+    static Interpretacao resolverRepetidos(List<Linha> linhas, int total, List<String> erros) {
+        Map<String, List<Linha>> porCodigo = new LinkedHashMap<>();
+        for (Linha linha : linhas) {
+            porCodigo.computeIfAbsent(CodigoBarras.canonico(linha.codigoOrigem()), c -> new ArrayList<>()).add(linha);
+        }
+        List<Item> itens = new ArrayList<>();
+        int repetidos = 0;
+        int conflitos = 0;
+        int zeros = 0;
+        for (Map.Entry<String, List<Linha>> entrada : porCodigo.entrySet()) {
+            List<Linha> doCodigo = entrada.getValue();
+            Linha escolhida = doCodigo.get(doCodigo.size() - 1);
+            String semPreco = null;
+            if (doCodigo.size() > 1) {
+                repetidos++;
+                List<Integer> precosPositivos = doCodigo.stream().map(Linha::preco).filter(p -> p > 0).distinct().toList();
+                if (precosPositivos.size() == 1) {
+                    int preco = precosPositivos.get(0);
+                    escolhida = doCodigo.stream().filter(l -> l.preco() == preco).reduce((a, b) -> b).orElseThrow();
+                } else if (precosPositivos.size() > 1) {
+                    semPreco = ProdutoEntity.SEM_PRECO_CONFLITO;
+                    conflitos++;
+                }
+            }
+            if (semPreco == null && escolhida.preco() == 0) {
+                semPreco = ProdutoEntity.SEM_PRECO_ZERO;
+                zeros++;
+            }
+            itens.add(new Item(entrada.getKey(), escolhida.codigoOrigem(), escolhida.descricao(), escolhida.preco(), semPreco));
+        }
+        return new Interpretacao(itens, total, erros, repetidos, conflitos, zeros, total, 0);
     }
 
     // "0000000389" (centavos, arquivo simulado) ou "3,89" / "1.234,56" (reais, arquivo real).
@@ -350,18 +524,49 @@ public class CargaPricetabService {
         return centavos > Integer.MAX_VALUE ? null : (int) centavos;
     }
 
-    // Supabase grátis tem 500 MB: das cargas antigas fica só o resumo.
-    @Scheduled(every = "6h", delayed = "1m")
+    // Arquivos guardados (regra 10d): por loja, os 3 últimos recebidos e sempre o último aplicado.
+    @Scheduled(every = "10m", delayed = "1m")
     @Transactional
     void limparArquivosAntigos() {
-        int limpas = entityManager.createNativeQuery(
-                        "UPDATE carga_pricetab c SET arquivo = NULL WHERE arquivo IS NOT NULL AND id NOT IN ("
-                                + "SELECT id FROM (SELECT id, row_number() OVER (PARTITION BY loja_id ORDER BY id DESC) AS n "
-                                + "FROM carga_pricetab) r WHERE r.n <= :manter)")
-                .setParameter("manter", CARGAS_COM_ARQUIVO_GUARDADO)
-                .executeUpdate();
-        if (limpas > 0) {
-            Log.infof("Arquivo removido de %d carga(s) antiga(s) do PRICETAB", limpas);
+        @SuppressWarnings("unchecked")
+        List<Object[]> antigos = entityManager.createNativeQuery(
+                        "SELECT id, caminho_arquivo FROM ("
+                                + "  SELECT c.id, c.caminho_arquivo, row_number() OVER (PARTITION BY c.loja_id ORDER BY c.id DESC) AS n, "
+                                + "         c.id = (SELECT max(a.id) FROM carga_pricetab a WHERE a.loja_id = c.loja_id "
+                                + "                 AND a.situacao = 'CONCLUIDA') AS ultima_aplicada "
+                                + "    FROM carga_pricetab c WHERE c.caminho_arquivo IS NOT NULL) r "
+                                + "WHERE r.n > :manter AND NOT r.ultima_aplicada")
+                .setParameter("manter", ARQUIVOS_GUARDADOS)
+                .getResultList();
+        for (Object[] antigo : antigos) {
+            armazenamento.apagar((String) antigo[1]);
+            entityManager.createNativeQuery("UPDATE carga_pricetab SET caminho_arquivo = NULL WHERE id = :id")
+                    .setParameter("id", ((Number) antigo[0]).longValue())
+                    .executeUpdate();
+        }
+        if (!antigos.isEmpty()) {
+            Log.infof("Arquivo removido de %d carga(s) antiga(s)", antigos.size());
+        }
+    }
+
+    // Regra 9d: o dicionário de uma loja mudou (trigger em abreviacao): recalcula descrições,
+    // setor e pré-lista dela sem esperar a próxima carga.
+    @Scheduled(every = "10s", delayed = "20s", concurrentExecution = Scheduled.ConcurrentExecution.SKIP)
+    void reprocessarDicionarios() {
+        @SuppressWarnings("unchecked")
+        List<Number> lojas = QuarkusTransaction.requiringNew().call(() -> entityManager.createNativeQuery(
+                "SELECT id FROM loja WHERE reprocessar_dicionario ORDER BY id").getResultList());
+        for (Number loja : lojas) {
+            try {
+                Number alterados = QuarkusTransaction.requiringNew().timeout(TEMPO_MAXIMO_CARGA_S).call(() -> (Number) entityManager.createNativeQuery(
+                                "SELECT reprocessar_descricoes(:loja)")
+                        .setParameter("loja", loja.intValue())
+                        .getSingleResult());
+                Log.infof("Dicionário alterado: loja %d reprocessada (%d produto(s) com descrição nova)", loja.intValue(),
+                        alterados.intValue());
+            } catch (Exception e) {
+                Log.errorf(e, "Falha ao reprocessar o dicionário da loja %d", loja.intValue());
+            }
         }
     }
 
@@ -376,7 +581,7 @@ public class CargaPricetabService {
                 .getResultStream().findFirst().orElse(null);
     }
 
-    private static Integer inteiro(Object valor) {
+    private static int inteiro(Object valor) {
         return valor == null ? 0 : ((Number) valor).intValue();
     }
 

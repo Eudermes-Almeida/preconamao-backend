@@ -12,10 +12,11 @@ import jakarta.persistence.Table;
 import jakarta.persistence.UniqueConstraint;
 import lombok.*;
 
+import java.time.LocalDate;
 import java.time.OffsetDateTime;
 
 @Entity
-@Table(name = "produtos", uniqueConstraints = @UniqueConstraint(columnNames = "codigo_barras"))
+@Table(name = "produtos", uniqueConstraints = @UniqueConstraint(name = "produtos_loja_codigo_unico", columnNames = {"loja_id", "codigo_barras"}))
 @Data
 @EqualsAndHashCode(callSuper = false)
 @Builder
@@ -27,11 +28,20 @@ public class ProdutoEntity {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
+    // Produto é da LOJA (scripts/027): cada loja tem o seu cadastro, preço e situação.
+    @Column(name = "loja_id", nullable = false)
+    private Integer lojaId;
+
+    // Canônico: sem zeros à frente e completado até 13 dígitos (CodigoBarras.canonico).
     @Column(name = "codigo_barras", nullable = false, length = 14)
     private String codigoBarras;
 
+    // Como veio da origem (rastreio: "07891991010153", "0000078938854").
+    @Column(name = "codigo_origem", length = 20)
+    private String codigoOrigem;
+
     // Como veio do PRICETAB (abreviada: "IOG BATAVO 170G MOR").
-    @Column(name = "descricao", nullable = false, length = 40)
+    @Column(name = "descricao", nullable = false, length = 120)
     private String descricao;
 
     // Com as abreviações por extenso ("IOGURTE BATAVO 170G MORANGO"), calculada pelo banco em toda
@@ -82,5 +92,40 @@ public class ProdutoEntity {
     // Última mudança de preço, descrição ou situação feita por uma carga.
     @Column(name = "atualizado_em", nullable = false)
     private OffsetDateTime atualizadoEm;
+
+    public static final String SEM_PRECO_ZERO = "ZERO";
+    public static final String SEM_PRECO_CONFLITO = "CONFLITO";
+
+    // Sem preço confiável por causa do dado: preço 0,00 (ZERO) ou código repetido no arquivo com
+    // preços diferentes (CONFLITO). O app mostra "Consulte o preço no terminal de consulta da loja".
+    @Column(name = "sem_preco", length = 10)
+    private String semPreco;
+
+    // Unidade informada pela origem (API): KG ou UN; null = não informou.
+    @Column(name = "unidade", length = 2)
+    private String unidade;
+
+    @Column(name = "secao_origem", length = 60)
+    private String secaoOrigem;
+
+    // Preço promocional da loja, com validade (só quando a origem informa: API).
+    @Column(name = "promocao_centavos")
+    private Integer promocaoCentavos;
+
+    @Column(name = "promocao_inicio")
+    private LocalDate promocaoInicio;
+
+    @Column(name = "promocao_fim")
+    private LocalDate promocaoFim;
+
+    @Column(name = "atacado_centavos")
+    private Integer atacadoCentavos;
+
+    @Column(name = "atacado_quantidade")
+    private Integer atacadoQuantidade;
+
+    // "Leve 3, pague 2": só texto informativo, o app não faz conta.
+    @Column(name = "condicao", length = 80)
+    private String condicao;
 
 }

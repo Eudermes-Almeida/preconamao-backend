@@ -1,6 +1,8 @@
 package br.com.preconamao.resource;
 
 import br.com.preconamao.dto.ProdutoDTO;
+import br.com.preconamao.entity.LojaEntity;
+import br.com.preconamao.service.LojaService;
 import br.com.preconamao.service.ProdutoService;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.GET;
@@ -30,6 +32,9 @@ public class ProdutoResource {
     @Inject
     ProdutoService produtoService;
 
+    @Inject
+    LojaService lojaService;
+
     @GET
     @Produces(MediaType.APPLICATION_JSON)
     @Tag(name = "Busca Produto por Descrição", description = "Busca candidatos a partir da descrição falada pelo cliente")
@@ -40,8 +45,10 @@ public class ProdutoResource {
     })
     @Operation(summary = "Busca produtos por descrição", description = "Recebe o texto reconhecido por voz e retorna até 10 produtos com descrição parecida, do mais para o menos similar; o cabeçalho X-Total-Encontrados traz quantos foram achados ao todo. Os códigos em destaques (ofertas da vitrine) vêm primeiro quando estão entre os mais parecidos.")
     public Response buscaProdutosPorDescricao(@QueryParam("descricao") String descricao,
-                                              @QueryParam("destaques") String destaques) {
+                                              @QueryParam("destaques") String destaques,
+                                              @QueryParam("loja") Integer lojaId) {
         try {
+            LojaEntity loja = lojaService.lojaDaConsulta(lojaId);
             if (descricao == null || descricao.trim().isEmpty()) {
                 return Response.status(Response.Status.BAD_REQUEST)
                         .entity("A descrição é obrigatória")
@@ -50,10 +57,12 @@ public class ProdutoResource {
 
             // Códigos das ofertas da vitrine, separados por vírgula: vêm primeiro quando são dos mais parecidos.
             ProdutoService.ResultadoBusca resultado = produtoService.buscaPorDescricao(descricao,
-                    destaques == null || destaques.isBlank() ? List.of() : Arrays.asList(destaques.split(",")));
+                    destaques == null || destaques.isBlank() ? List.of() : Arrays.asList(destaques.split(",")), loja);
             return Response.ok(resultado.produtos())
                     .header(CABECALHO_TOTAL, resultado.totalEncontrado())
                     .build();
+        } catch (LojaService.LojaIndisponivel e) {
+            return RespostaLoja.indisponivel(e);
         } catch (Exception e) {
             return Response.status(Response.Status.INTERNAL_SERVER_ERROR)
                     .entity("Erro ao buscar produtos: " + e.getMessage())
@@ -71,15 +80,18 @@ public class ProdutoResource {
             @APIResponse(responseCode = "500", description = "Erro interno do servidor"),
     })
     @Operation(summary = "Busca produtos por lista de códigos", description = "Recebe até 100 códigos separados por vírgula (ofertas do app, revalidação do carrinho) e devolve os produtos com o preço atual.")
-    public Response buscaProdutosPorCodigos(@QueryParam("codigos") String codigos) {
+    public Response buscaProdutosPorCodigos(@QueryParam("codigos") String codigos, @QueryParam("loja") Integer lojaId) {
         try {
+            LojaEntity loja = lojaService.lojaDaConsulta(lojaId);
             if (codigos == null || codigos.isBlank()) {
                 return Response.status(Response.Status.BAD_REQUEST)
                         .entity("Informe os códigos separados por vírgula")
                         .build();
             }
 
-            return Response.ok(produtoService.buscaPorCodigos(Arrays.asList(codigos.split(",")))).build();
+            return Response.ok(produtoService.buscaPorCodigos(Arrays.asList(codigos.split(",")), loja)).build();
+        } catch (LojaService.LojaIndisponivel e) {
+            return RespostaLoja.indisponivel(e);
         } catch (Exception e) {
             return Response.status(Response.Status.INTERNAL_SERVER_ERROR)
                     .entity("Erro ao buscar produtos: " + e.getMessage())
@@ -98,19 +110,22 @@ public class ProdutoResource {
             @APIResponse(responseCode = "500", description = "Erro interno do servidor"),
     })
     @Operation(summary = "Busca produto por código de barras", description = "Recebe o código lido pelo scanner USB e retorna descrição e preço (em centavos) do produto correspondente.")
-    public Response buscaProdutoPorCodigoBarras(@PathParam("codigoBarras") String codigoBarras) {
+    public Response buscaProdutoPorCodigoBarras(@PathParam("codigoBarras") String codigoBarras, @QueryParam("loja") Integer lojaId) {
         try {
+            LojaEntity loja = lojaService.lojaDaConsulta(lojaId);
             if (codigoBarras == null || codigoBarras.trim().isEmpty()) {
                 return Response.status(Response.Status.BAD_REQUEST)
                         .entity("O código de barras é obrigatório")
                         .build();
             }
 
-            return produtoService.buscaPorCodigoBarras(codigoBarras)
+            return produtoService.buscaPorCodigoBarras(codigoBarras, loja)
                     .map(produto -> Response.ok(produto).build())
                     .orElseGet(() -> Response.status(Response.Status.NOT_FOUND)
                             .entity("Nenhum produto encontrado para o código " + codigoBarras)
                             .build());
+        } catch (LojaService.LojaIndisponivel e) {
+            return RespostaLoja.indisponivel(e);
         } catch (Exception e) {
             return Response.status(Response.Status.INTERNAL_SERVER_ERROR)
                     .entity("Erro ao buscar produto: " + e.getMessage())

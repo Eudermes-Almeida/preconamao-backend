@@ -15,5 +15,7 @@ public class LoteEventosDTO {
     private String aparelhoId;
 
     private List<EventoMidiaDTO> eventos;
+    // Loja escolhida no app (multi-loja); ausente (app antigo) = loja padrão.
+    private Integer lojaId;
 
 }

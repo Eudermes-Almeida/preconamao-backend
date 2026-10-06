@@ -24,9 +24,6 @@ import java.util.Optional;
 public class AlertaService {
 
     private static final int REPETIR_HORAS = 6;
-    // Tempo que o arquivo novo da loja pode ficar sem ser aplicado antes de virar alerta (a carga
-    // normal leva segundos).
-    private static final int TOLERANCIA_NAO_APLICADO_MIN = 10;
 
     // Vazio = só registra no log (e-mail não configurado).
     @ConfigProperty(name = "alerta.email-destino")
@@ -48,7 +45,7 @@ public class AlertaService {
     @Transactional
     void verificarLojas() {
         List<LojaEntity> lojas = entityManager.createQuery(
-                "SELECT l FROM LojaEntity l WHERE l.limiteSemSinalMin IS NOT NULL", LojaEntity.class).getResultList();
+                "SELECT l FROM LojaEntity l WHERE l.limiteSemSinalMin IS NOT NULL AND l.ativa = true", LojaEntity.class).getResultList();
         for (LojaEntity loja : lojas) {
             String problema = problemaAtual(loja);
             boolean mudou = !Objects.equals(problema, loja.getAlertaAtivo());
@@ -63,12 +60,13 @@ public class AlertaService {
         }
     }
 
-    // null = tudo certo.
+    // null = tudo certo. Mesma regra que esconde o preço no app (regra 11g do multi-loja): o
+    // alerta sai quando a proteção é acionada e outro quando ela se normaliza.
     String problemaAtual(LojaEntity loja) {
         if (!lojaService.sinalRecente(loja)) {
             return "SEM_SINAL";
         }
-        if (loja.getHashAplicado() != null && loja.getHashAplicado().equals(loja.getHashInformado())) {
+        if (lojaService.situacaoPreco(loja).confiavel()) {
             return null;
         }
         CargaPricetabEntity ultima = cargaService.ultimaCarga(loja.getId());
@@ -78,10 +76,6 @@ public class AlertaService {
             }
             if (CargaPricetabEntity.ERRO.equals(ultima.getSituacao())) {
                 return "CARGA_COM_ERRO";
-            }
-            if (CargaPricetabEntity.RECEBIDA.equals(ultima.getSituacao())
-                    && ultima.getRecebidaEm().isAfter(OffsetDateTime.now().minusMinutes(TOLERANCIA_NAO_APLICADO_MIN))) {
-                return null;
             }
         }
         return "ARQUIVO_NAO_APLICADO";
@@ -96,7 +90,7 @@ public class AlertaService {
         } else {
             assunto = "[Simplifica Compras] ALERTA " + loja.getNome() + ": " + problema;
             texto = descricao(problema, loja) + "\n\nEnquanto isso, o app mostra \"Consulte o preço no terminal "
-                    + "da loja\" no lugar do preço.\nÚltimo sinal do agente: "
+                    + "de consulta da loja\" no lugar do preço.\nÚltimo sinal: "
                     + (loja.getUltimoSinalEm() == null ? "nunca" : loja.getUltimoSinalEm());
         }
         Log.warnf("%s | %s", assunto, texto.replace('\n', ' '));
@@ -112,11 +106,15 @@ public class AlertaService {
 
     private String descricao(String problema, LojaEntity loja) {
         return switch (problema) {
-            case "SEM_SINAL" -> "O agente da loja está sem dar sinal de vida há mais de " + loja.getLimiteSemSinalMin()
+            case "SEM_SINAL" -> LojaEntity.ORIGEM_API.equals(loja.getTipoOrigem())
+                    ? "A API da loja não responde há mais de " + loja.getLimiteSemSinalMin()
+                    + " minutos (nenhuma coleta deu certo). Verifique o sistema da loja e as credenciais."
+                    : "O agente da loja está sem dar sinal de vida há mais de " + loja.getLimiteSemSinalMin()
                     + " minutos. Verifique se o PC/servidor da loja está ligado, com internet, e se a tarefa "
                     + "\"SimplificaCompras-AgentePricetab\" está rodando.";
-            case "CARGA_RETIDA" -> "O último PRICETAB da loja foi RETIDO por segurança (muitos produtos sumiriam "
-                    + "de uma vez: arquivo cortado ou vazio?). Nada foi alterado. Confira o arquivo na loja.";
+            case "CARGA_RETIDA" -> "A última carga da loja foi RETIDA por segurança (muitos produtos sumiriam de "
+                    + "uma vez, arquivo fora do formato da loja ou nome que não confere com a chave). Nada foi "
+                    + "alterado. Veja o motivo na carga e confira o arquivo na loja.";
             case "CARGA_COM_ERRO" -> "O último PRICETAB da loja deu erro ao ser aplicado. Nada foi alterado.";
             default -> "A loja tem um PRICETAB diferente do que está aplicado no app, e ele não chegou ao servidor.";
         };

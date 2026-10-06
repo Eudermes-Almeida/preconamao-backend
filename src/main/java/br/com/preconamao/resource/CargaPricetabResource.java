@@ -35,6 +35,9 @@ import java.util.function.Function;
 public class CargaPricetabResource {
 
     public static final String CABECALHO_CHAVE = "X-Chave-Loja";
+    // Nome da cópia enviada pelo agente (PRICETAB_<loja>_<data-hora>.TXT): confere com a chave
+    // (regra 7 do multi-loja). Opcional: o agente antigo não manda.
+    public static final String CABECALHO_NOME = "X-Nome-Arquivo";
 
     @Inject
     CargaPricetabService cargaService;
@@ -53,7 +56,8 @@ public class CargaPricetabResource {
             @APIResponse(responseCode = "413", description = "Arquivo maior que o limite"),
     })
     @Operation(summary = "Recebe o PRICETAB.TXT da loja", description = "Corpo = bytes do arquivo como estão (Latin-1). O processamento (diferença com o banco, localização, pré-lista) roda em seguida; acompanhe por GET /cargas/{id}.")
-    public Response recebePricetab(@HeaderParam(CABECALHO_CHAVE) String chave, byte[] arquivo) {
+    public Response recebePricetab(@HeaderParam(CABECALHO_CHAVE) String chave,
+                                   @HeaderParam(CABECALHO_NOME) String nomeArquivo, byte[] arquivo) {
         return comLoja(chave, loja -> {
             if (arquivo == null || arquivo.length == 0) {
                 return Response.status(Response.Status.BAD_REQUEST).entity("Arquivo vazio").build();
@@ -62,7 +66,7 @@ public class CargaPricetabResource {
                 return Response.status(413).entity("Arquivo maior que o limite de "
                         + CargaPricetabService.TAMANHO_MAXIMO_BYTES / (1024 * 1024) + " MB").build();
             }
-            CargaRecebidaDTO carga = cargaService.receber(loja, arquivo);
+            CargaRecebidaDTO carga = cargaService.receber(loja, arquivo, nomeArquivo);
             return Response.status(carga.isNovaCarga() ? Response.Status.ACCEPTED : Response.Status.OK).entity(carga).build();
         });
     }

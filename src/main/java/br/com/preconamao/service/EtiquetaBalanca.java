@@ -1,54 +1,43 @@
 package br.com.preconamao.service;
 
-import jakarta.enterprise.context.ApplicationScoped;
-import org.eclipse.microprofile.config.inject.ConfigProperty;
+import br.com.preconamao.entity.LojaEntity;
 
 import java.util.Optional;
 
 // Decodifica a etiqueta impressa pela balança da loja (hortifrúti, açougue, padaria). O código
 // não está no PRICETAB: é gerado na pesagem, no padrão EAN-13 de uso interno (começa com 2).
-// Layout levantado das etiquetas reais do Supermercados ABC (ex.: 2298400004652):
-//   2 | 2984 | 00 | 00465 | 2
-//   prefixo | código interno do produto | (sobra do campo) | valor total em centavos | dígito
-// As posições vêm do application.properties (ETIQUETA_BALANCA_*), porque cada rede configura a
-// balança do seu jeito. Índices começam em 0.
-@ApplicationScoped
-public class EtiquetaBalanca {
+// O layout é de cada LOJA (regra 20 do multi-loja; colunas etiqueta_* da tabela loja). Exemplo
+// real enviado pelo técnico (6 dígitos de código, sem dígito verificador no interno):
+//   2 | 000266 | 00680 | 6        (CARNE BOVINA PATINHO, 0,170 kg x R$ 39,98 = R$ 6,80)
+//   prefixo | código do produto | valor total em centavos | dígito
+// Índices começam em 0.
+public final class EtiquetaBalanca {
 
-    @ConfigProperty(name = "etiqueta-balanca.prefixo")
-    String prefixo;
+    private EtiquetaBalanca() {
+    }
 
-    @ConfigProperty(name = "etiqueta-balanca.codigo-inicio")
-    int codigoInicio;
-
-    @ConfigProperty(name = "etiqueta-balanca.codigo-tamanho")
-    int codigoTamanho;
-
-    @ConfigProperty(name = "etiqueta-balanca.valor-inicio")
-    int valorInicio;
-
-    @ConfigProperty(name = "etiqueta-balanca.valor-tamanho")
-    int valorTamanho;
-
+    // codigoProduto vem sem os zeros da frente (compara com produtos.codigo_balanca).
     public record Leitura(String codigoProduto, int valorCentavos) {
     }
 
-    // Vazio quando o código não é etiqueta de balança ou o dígito verificador não confere
-    // (leitura errada da câmera: melhor "não encontrado" do que um preço trocado).
-    public Optional<Leitura> decodificar(String codigoBarras) {
+    // Vazio quando o código não é etiqueta de balança desta loja ou o dígito verificador não
+    // confere (leitura errada da câmera: melhor "não encontrado" do que um preço trocado).
+    public static Optional<Leitura> decodificar(String codigoBarras, LojaEntity loja) {
         if (codigoBarras.length() != 13 || !codigoBarras.chars().allMatch(Character::isDigit)
-                || !codigoBarras.startsWith(prefixo) || !digitoVerificadorConfere(codigoBarras)) {
+                || !codigoBarras.startsWith(loja.getEtiquetaPrefixo()) || !digitoVerificadorConfere(codigoBarras)) {
             return Optional.empty();
         }
-
-        String codigoProduto = codigoBarras.substring(codigoInicio, codigoInicio + codigoTamanho);
-        int valorCentavos = Integer.parseInt(codigoBarras.substring(valorInicio, valorInicio + valorTamanho));
+        int codigoInicio = loja.getEtiquetaCodigoInicio();
+        int valorInicio = loja.getEtiquetaValorInicio();
+        String codigoProduto = codigoBarras.substring(codigoInicio, codigoInicio + loja.getEtiquetaCodigoTamanho())
+                .replaceFirst("^0+(?=.)", "");
+        int valorCentavos = Integer.parseInt(codigoBarras.substring(valorInicio, valorInicio + loja.getEtiquetaValorTamanho()));
         return Optional.of(new Leitura(codigoProduto, valorCentavos));
     }
 
     // EAN-13: pesos 1 e 3 alternados nos 12 primeiros dígitos; o 13º completa a soma até a
     // próxima dezena.
-    private boolean digitoVerificadorConfere(String codigoBarras) {
+    static boolean digitoVerificadorConfere(String codigoBarras) {
         int soma = 0;
         for (int i = 0; i < 12; i++) {
             int digito = codigoBarras.charAt(i) - '0';

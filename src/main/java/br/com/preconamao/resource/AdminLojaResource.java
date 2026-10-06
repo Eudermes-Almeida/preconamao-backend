@@ -1,0 +1,97 @@
+package br.com.preconamao.resource;
+
+import br.com.preconamao.entity.CredencialApiEntity;
+import br.com.preconamao.entity.LojaEntity;
+import br.com.preconamao.service.CifraCredenciais;
+import br.com.preconamao.service.ColetaApiService;
+import br.com.preconamao.service.RelatorioAcessoService;
+import io.quarkus.narayana.jta.QuarkusTransaction;
+import jakarta.inject.Inject;
+import jakarta.persistence.EntityManager;
+import jakarta.ws.rs.Consumes;
+import jakarta.ws.rs.HeaderParam;
+import jakarta.ws.rs.POST;
+import jakarta.ws.rs.PUT;
+import jakarta.ws.rs.Path;
+import jakarta.ws.rs.PathParam;
+import jakarta.ws.rs.Produces;
+import jakarta.ws.rs.core.MediaType;
+import jakarta.ws.rs.core.Response;
+import org.eclipse.microprofile.openapi.annotations.Operation;
+import org.eclipse.microprofile.openapi.annotations.tags.Tag;
+
+import java.time.OffsetDateTime;
+import java.util.Map;
+import java.util.Optional;
+
+// Operações de quem opera o sistema sobre uma loja. Só com a chave GERAL (X-Chave-Relatorio).
+// Por enquanto: cadastrar a credencial da API da loja (cifrada; nunca devolvida) e pedir uma
+// coleta agora (laboratório). O cadastro de lojas continua por script SQL (regra 27).
+@Path("/admin/lojas")
+@Produces(MediaType.APPLICATION_JSON)
+@Tag(name = "Administração de lojas", description = "Só com a chave geral")
+public class AdminLojaResource {
+
+    @Inject
+    RelatorioAcessoService acessoService;
+
+    @Inject
+    CifraCredenciais cifra;
+
+    @Inject
+    ColetaApiService coletaApiService;
+
+    @Inject
+    EntityManager entityManager;
+
+    public record CredencialApiDTO(String url, String usuario, String senha) {
+    }
+
+    @PUT
+    @Path("/{id}/credencial-api")
+    @Consumes(MediaType.APPLICATION_JSON)
+    @Operation(summary = "Grava a credencial da API da loja", description = "A senha/token é cifrada no servidor e nunca volta em nenhuma resposta.")
+    public Response gravarCredencial(@HeaderParam("X-Chave-Relatorio") String chave, @PathParam("id") Integer lojaId,
+                                     CredencialApiDTO dados) {
+        if (!geral(chave)) {
+            return Response.status(Response.Status.UNAUTHORIZED).entity("Só com a chave geral").build();
+        }
+        if (dados == null || vazio(dados.url()) || vazio(dados.usuario()) || vazio(dados.senha())
+                || !dados.url().matches("https?://.+")) {
+            return Response.status(Response.Status.BAD_REQUEST).entity("Informe url (http/https), usuario e senha").build();
+        }
+        return QuarkusTransaction.requiringNew().call(() -> {
+            LojaEntity loja = entityManager.find(LojaEntity.class, lojaId);
+            if (loja == null) {
+                return Response.status(Response.Status.NOT_FOUND).entity("Loja não encontrada").build();
+            }
+            CredencialApiEntity credencial = Optional.ofNullable(entityManager.find(CredencialApiEntity.class, lojaId))
+                    .orElseGet(() -> CredencialApiEntity.builder().lojaId(lojaId).build());
+            credencial.setUrl(dados.url().trim());
+            credencial.setUsuario(dados.usuario().trim());
+            credencial.setSegredoCifrado(cifra.cifrar(dados.senha()));
+            credencial.setAtualizadaEm(OffsetDateTime.now());
+            entityManager.merge(credencial);
+            return Response.ok(Map.of("loja", lojaId, "url", credencial.getUrl(), "usuario", credencial.getUsuario(),
+                    "gravada", true)).build();
+        });
+    }
+
+    @POST
+    @Path("/{id}/coletar-agora")
+    @Operation(summary = "Coleta a API da loja agora (sem esperar o intervalo)")
+    public Response coletarAgora(@HeaderParam("X-Chave-Relatorio") String chave, @PathParam("id") Integer lojaId) {
+        if (!geral(chave)) {
+            return Response.status(Response.Status.UNAUTHORIZED).entity("Só com a chave geral").build();
+        }
+        return Response.ok(Map.of("resultado", coletaApiService.coletar(lojaId))).build();
+    }
+
+    private boolean geral(String chave) {
+        return acessoService.autenticar(chave).map(a -> RelatorioAcessoService.GERAL.equals(a.tipo())).orElse(false);
+    }
+
+    private static boolean vazio(String valor) {
+        return valor == null || valor.isBlank();
+    }
+}
