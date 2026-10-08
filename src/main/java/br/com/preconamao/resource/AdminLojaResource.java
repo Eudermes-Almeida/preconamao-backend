@@ -92,6 +92,36 @@ public class AdminLojaResource {
         return Response.ok(Map.of("resultado", coletaApiService.coletar(lojaId, !"incremental".equalsIgnoreCase(tipo)))).build();
     }
 
+    @POST
+    @Path("/{id}/pedir-completa")
+    @Operation(summary = "Pede uma coleta completa ao agente RPInfo da loja",
+            description = "Só marca: na próxima vez que o agente enviar o sinal (conexão de saída da loja), a resposta traz fazerCompleta=true.")
+    public Response pedirCompleta(@HeaderParam("X-Chave-Relatorio") String chave, @PathParam("id") Integer lojaId) {
+        return marcarLoja(chave, lojaId, loja -> loja.setPedirCompleta(true), "pedirCompleta");
+    }
+
+    @POST
+    @Path("/{id}/liberar-agente")
+    @Operation(summary = "Libera o registro do agente da loja (troca de computador)",
+            description = "Só 1 agente por loja: o próximo agente que se identificar passa a ser o registrado.")
+    public Response liberarAgente(@HeaderParam("X-Chave-Relatorio") String chave, @PathParam("id") Integer lojaId) {
+        return marcarLoja(chave, lojaId, loja -> loja.setAgenteId(null), "agenteLiberado");
+    }
+
+    private Response marcarLoja(String chave, Integer lojaId, java.util.function.Consumer<LojaEntity> marcacao, String campo) {
+        if (!geral(chave)) {
+            return Response.status(Response.Status.UNAUTHORIZED).entity("Só com a chave geral").build();
+        }
+        return QuarkusTransaction.requiringNew().call(() -> {
+            LojaEntity loja = entityManager.find(LojaEntity.class, lojaId);
+            if (loja == null) {
+                return Response.status(Response.Status.NOT_FOUND).entity("Loja não encontrada").build();
+            }
+            marcacao.accept(loja);
+            return Response.ok(Map.of("loja", lojaId, campo, true)).build();
+        });
+    }
+
     private boolean geral(String chave) {
         return acessoService.autenticar(chave).map(a -> RelatorioAcessoService.GERAL.equals(a.tipo())).orElse(false);
     }

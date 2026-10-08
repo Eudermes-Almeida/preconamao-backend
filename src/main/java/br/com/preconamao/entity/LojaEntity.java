@@ -132,6 +132,21 @@ public class LojaEntity {
     @Column(name = "liberar_proxima_carga", nullable = false)
     private boolean liberarProximaCarga;
 
+    // Agente RPInfo (scripts/034): o servidor marca e o agente, ao enviar o sinal, recebe "fazer
+    // completa"; agenteId = o único agente aceito para a loja (o 1º que se identificou).
+    @Column(name = "pedir_completa", nullable = false)
+    private boolean pedirCompleta;
+
+    @Column(name = "agente_id", length = 80)
+    private String agenteId;
+
+    // Trava de queda de preço (scripts/034): fração dos ativos e queda mínima por produto.
+    @Column(name = "queda_preco_limite", nullable = false, precision = 4, scale = 3)
+    private BigDecimal quedaPrecoLimite;
+
+    @Column(name = "queda_preco_minima", nullable = false, precision = 4, scale = 3)
+    private BigDecimal quedaPrecoMinima;
+
     @Column(name = "liberada_por", length = 60)
     private String liberadaPor;
 

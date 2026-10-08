@@ -9,17 +9,20 @@ import java.nio.charset.StandardCharsets;
 import java.util.Map;
 
 // Parâmetros da ficha do formato (formato_origem.parametros, scripts/027). Ausente = PRICETAB de
-// 40 posições, como a loja piloto sempre foi. API: tamanhoPagina e dialeto (scripts/031: SIMPLES =
-// API simulada v1; RPINFO = API da RPInfo).
+// 40 posições, como a loja piloto sempre foi. API: tamanhoPagina, dialeto (scripts/031: SIMPLES =
+// API simulada v1; RPINFO = API da RPInfo) e coleta (scripts/034: SERVIDOR = o nosso servidor
+// consulta a API; AGENTE = o agente na loja consulta e envia os pacotes, o servidor só recebe).
 public record FormatoPricetab(String separador, int tamanhoDescricao, boolean descricaoCortada,
                               boolean emendarLinhas, Charset codificacao, boolean internoSemKgEhUnidade,
-                              int tamanhoPagina, String dialeto) {
+                              int tamanhoPagina, String dialeto, String coleta) {
 
     public static final String DIALETO_SIMPLES = "SIMPLES";
     public static final String DIALETO_RPINFO = "RPINFO";
+    public static final String COLETA_SERVIDOR = "SERVIDOR";
+    public static final String COLETA_AGENTE = "AGENTE";
 
     public static final FormatoPricetab PADRAO = new FormatoPricetab("|", 40, false, true,
-            StandardCharsets.ISO_8859_1, true, 500, DIALETO_SIMPLES);
+            StandardCharsets.ISO_8859_1, true, 500, DIALETO_SIMPLES, COLETA_SERVIDOR);
 
     private static final Jsonb JSONB = JsonbBuilder.create();
 
@@ -37,7 +40,8 @@ public record FormatoPricetab(String separador, int tamanhoDescricao, boolean de
                 p.get("codificacao") == null ? PADRAO.codificacao() : Charset.forName(p.get("codificacao").toString()),
                 booleano(p.get("internoSemKgEhUnidade"), PADRAO.internoSemKgEhUnidade()),
                 inteiro(p.get("tamanhoPagina"), PADRAO.tamanhoPagina()),
-                texto(p.get("dialeto"), PADRAO.dialeto()));
+                texto(p.get("dialeto"), PADRAO.dialeto()),
+                texto(p.get("coleta"), PADRAO.coleta()));
     }
 
     private static String texto(Object valor, String padrao) {

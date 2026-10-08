@@ -68,10 +68,13 @@ public class ColetaApiService {
     @Scheduled(every = "1m", delayed = "40s", concurrentExecution = Scheduled.ConcurrentExecution.SKIP)
     void coletarLojasNaHora() {
         OffsetDateTime agora = OffsetDateTime.now();
+        // Lojas cuja API é consultada pelo AGENTE na loja (scripts/034) não são coletadas aqui.
         List<LojaEntity> lojas = QuarkusTransaction.requiringNew().call(() -> entityManager.createQuery(
                         "SELECT l FROM LojaEntity l WHERE l.tipoOrigem = :api AND l.ativa = true ORDER BY l.id", LojaEntity.class)
                 .setParameter("api", LojaEntity.ORIGEM_API)
-                .getResultList());
+                .getResultList().stream()
+                .filter(l -> !FormatoPricetab.COLETA_AGENTE.equals(FormatoPricetab.de(lojaService.formato(l)).coleta()))
+                .toList());
         for (LojaEntity loja : lojas) {
             int intervalo = loja.getIntervaloColetaMin() == null ? INTERVALO_PADRAO_MIN : loja.getIntervaloColetaMin();
             if (loja.getUltimaColetaEm() == null || !loja.getUltimaColetaEm().isAfter(agora.minusMinutes(intervalo).plusSeconds(5))) {
@@ -108,6 +111,9 @@ public class ColetaApiService {
         try {
             Object[] preparo = QuarkusTransaction.requiringNew().call(() -> {
                 LojaEntity loja = entityManager.find(LojaEntity.class, lojaId);
+                if (FormatoPricetab.COLETA_AGENTE.equals(FormatoPricetab.de(lojaService.formato(loja)).coleta())) {
+                    throw new IllegalStateException("loja alimentada pelo agente na loja (o servidor só recebe os pacotes)");
+                }
                 loja.setUltimaColetaEm(inicio);
                 CredencialApiEntity credencial = entityManager.find(CredencialApiEntity.class, lojaId);
                 if (credencial == null) {

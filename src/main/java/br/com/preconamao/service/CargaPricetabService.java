@@ -18,6 +18,7 @@ import jakarta.transaction.Transactional;
 
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
+import java.time.LocalDate;
 import java.time.OffsetDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
@@ -130,6 +131,102 @@ public class CargaPricetabService {
         return dto;
     }
 
+    // ------------------------------------------------------------------------------------------
+    // Pacote do agente RPInfo (scripts/034): o agente consulta a API da RPInfo DENTRO da loja e envia
+    // um pacote JSON (compactado ou não) com os campos da RPInfo que usamos:
+    //   {"tipo": "COMPLETA"|"PARCIAL", "hashFoto": "<sha-256 da foto local>", "departamentos": {...},
+    //    "produtos": [...produtos como vieram da RPInfo...], "excluidos": [códigos internos]}
+    // A conversão é a mesma da coleta pelo servidor (ColetaRpinfo.converter): uma regra corrigida
+    // aqui vale para todas as lojas sem reinstalar agentes. hashFoto vira o hash da carga: é o que o
+    // agente informa no sinal (proteção de preço) e o que evita aplicar duas vezes o mesmo estado.
+    // ------------------------------------------------------------------------------------------
+
+    public record PacoteInvalido(int status, String mensagem) {
+    }
+
+    @SuppressWarnings("unchecked")
+    @Transactional
+    public Object receberPacoteRpinfo(LojaEntity loja, byte[] corpo) {
+        LojaEntity lojaAtual = entityManager.find(LojaEntity.class, loja.getId());
+        FormatoPricetab formato = FormatoPricetab.de(lojaService.formato(lojaAtual));
+        if (!LojaEntity.ORIGEM_API.equals(lojaAtual.getTipoOrigem()) || !FormatoPricetab.COLETA_AGENTE.equals(formato.coleta())
+                || !FormatoPricetab.DIALETO_RPINFO.equals(formato.dialeto())) {
+            return new PacoteInvalido(409, "Loja não configurada para o agente RPInfo (formato \"API RPInfo (agente)\").");
+        }
+        Map<String, Object> pacote;
+        try {
+            pacote = jsonb.fromJson(new String(descompactar(corpo), StandardCharsets.UTF_8), Map.class);
+        } catch (Exception e) {
+            return new PacoteInvalido(400, "Pacote ilegível (esperado JSON, compactado em gzip ou não).");
+        }
+        String tipo = String.valueOf(pacote.get("tipo"));
+        String hashFoto = pacote.get("hashFoto") == null ? "" : pacote.get("hashFoto").toString();
+        if (!CargaPricetabEntity.COMPLETA.equals(tipo) && !CargaPricetabEntity.PARCIAL.equals(tipo)) {
+            return new PacoteInvalido(400, "tipo deve ser COMPLETA ou PARCIAL");
+        }
+        if (!hashFoto.matches("[0-9a-f]{64}")) {
+            return new PacoteInvalido(400, "hashFoto deve ser o SHA-256 (64 caracteres hexadecimais) da foto local");
+        }
+
+        lojaAtual.setUltimoSinalEm(OffsetDateTime.now());
+        lojaService.registrarHashInformado(lojaAtual, hashFoto);
+        if (CargaPricetabEntity.COMPLETA.equals(tipo)) {
+            lojaAtual.setPedirCompleta(false);
+            lojaAtual.setUltimaColetaCompletaEm(OffsetDateTime.now());
+        }
+        if (hashFoto.equals(lojaAtual.getHashAplicado())) {
+            return CargaRecebidaDTO.builder().situacao("JA_APLICADO").mensagem("Esta foto da loja já está aplicada.").build();
+        }
+        CargaPricetabEntity ultima = ultimaCarga(loja.getId());
+        if (ultima != null && hashFoto.equals(ultima.getHash())) {
+            if (reenfileirarSeLiberada(lojaAtual, ultima)) {
+                return paraDTO(ultima, "Carga liberada: reprocessando em alguns segundos.");
+            }
+            return paraDTO(ultima, "Este pacote já foi recebido (carga nº " + ultima.getId() + ").");
+        }
+
+        Map<String, String> departamentos = new LinkedHashMap<>();
+        if (pacote.get("departamentos") instanceof Map<?, ?> deptos) {
+            deptos.forEach((codigo, nome) -> departamentos.put(String.valueOf(codigo), nome == null ? null : nome.toString()));
+        }
+        Map<String, Map<String, Object>> porCodigo = new LinkedHashMap<>();
+        ColetaRpinfo.Contagem contagem = new ColetaRpinfo.Contagem();
+        List<String> internos = new ArrayList<>();
+        LocalDate hoje = LocalDate.now(ColetaRpinfo.FUSO_ERP);
+        for (Object item : (List<Object>) pacote.getOrDefault("produtos", List.of())) {
+            if (item instanceof Map<?, ?> produto) {
+                internos.add(ColetaRpinfo.interno(produto.get("Codigo")));
+                ColetaRpinfo.converter((Map<String, Object>) produto, departamentos, hoje, porCodigo, contagem);
+            }
+        }
+        for (Object excluido : (List<Object>) pacote.getOrDefault("excluidos", List.of())) {
+            internos.add(ColetaRpinfo.interno(excluido));
+        }
+        List<Map<String, Object>> itens = ColetaApiService.ordenados(porCodigo);
+        boolean completa = CargaPricetabEntity.COMPLETA.equals(tipo);
+        if (completa && itens.isEmpty()) {
+            return new PacoteInvalido(400, "Pacote COMPLETO sem nenhum produto válido.");
+        }
+        byte[] conteudo = jsonb.toJson(completa ? itens : Map.of("itens", itens, "internos", internos)).getBytes(StandardCharsets.UTF_8);
+        CargaPricetabEntity carga = registrar(lojaAtual, CargaPricetabEntity.RECEBIDA, LojaEntity.ORIGEM_API,
+                null, conteudo, hashFoto, ".json");
+        carga.setTipo(tipo);
+        Log.infof("Pacote %s do agente RPInfo da loja %d: %d produto(s) do ERP -> %d código(s); carga nº %d na fila",
+                tipo, loja.getId(), contagem.produtos, itens.size(), carga.getId());
+        CargaRecebidaDTO dto = paraDTO(carga, "Recebido; processamento em alguns segundos.");
+        dto.setNovaCarga(true);
+        return dto;
+    }
+
+    static byte[] descompactar(byte[] corpo) throws java.io.IOException {
+        if (corpo.length > 2 && (corpo[0] & 0xff) == 0x1f && (corpo[1] & 0xff) == 0x8b) {
+            try (java.util.zip.GZIPInputStream gz = new java.util.zip.GZIPInputStream(new java.io.ByteArrayInputStream(corpo))) {
+                return gz.readNBytes(TAMANHO_MAXIMO_BYTES * 5);
+            }
+        }
+        return corpo;
+    }
+
     // Grava o arquivo no armazenamento e a ficha da carga no banco.
     public CargaPricetabEntity registrar(LojaEntity loja, String situacao, String origem, String nomeArquivo,
                                          byte[] conteudo, String hash, String extensao) {
@@ -190,6 +287,7 @@ public class CargaPricetabService {
                 && (ultima == null || !hashArquivo.equals(ultima.getHash()));
         return SinalRespostaDTO.builder()
                 .enviarArquivo(enviarArquivo)
+                .fazerCompleta(lojaAtual.isPedirCompleta())
                 .hashAplicado(lojaAtual.getHashAplicado())
                 .ultimaCarga(ultima == null ? null : paraDTO(ultima, ultima.getMensagem()))
                 .build();
@@ -390,6 +488,18 @@ public class CargaPricetabService {
                 .getSingleResult();
         Map<String, Object> resultado = jsonb.fromJson(resultadoJson, Map.class);
 
+        if (Boolean.TRUE.equals(resultado.get("retida")) && "QUEDA_PRECO".equals(resultado.get("motivo"))) {
+            int quedas = inteiro(resultado.get("quedas"));
+            int ativos = inteiro(resultado.get("ativos"));
+            carga.setSituacao(CargaPricetabEntity.RETIDA);
+            carga.setMensagem(String.format("RETIDA por segurança: %d de %d produtos (%s) teriam o preço derrubado em mais de %s "
+                            + "de uma vez. Limite da loja: %s dos produtos. Erro na origem ou dados adulterados? Conferir e, "
+                            + "se estiver certo, liberar a próxima carga. Nada foi alterado.", quedas, ativos,
+                    percentual(ativos == 0 ? 0 : (double) quedas / ativos),
+                    percentual(new BigDecimal(String.valueOf(resultado.get("quedaMinima"))).doubleValue()),
+                    percentual(new BigDecimal(String.valueOf(resultado.get("quedaLimite"))).doubleValue())) + errosTexto);
+            return;
+        }
         if (Boolean.TRUE.equals(resultado.get("retida"))) {
             int sumiriam = inteiro(resultado.get("sumiriam"));
             int ativos = inteiro(resultado.get("ativos"));

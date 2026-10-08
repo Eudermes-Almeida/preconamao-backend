@@ -92,6 +92,29 @@ public class LojaService {
         }
     }
 
+    // Só 1 agente por loja (scripts/034, segurança R10): o 1º agente que se identifica fica
+    // registrado; outro (a mesma chave copiada em outro computador) é recusado. Sem identificação
+    // (agente PRICETAB antigo) continua aceito enquanto nenhum agente se registrou. Trocar de
+    // computador = limpar loja.agente_id. Devolve a mensagem de recusa ou null.
+    @Transactional
+    public String conferirAgente(LojaEntity loja, String agenteId) {
+        LojaEntity atual = entityManager.find(LojaEntity.class, loja.getId());
+        if (agenteId == null || agenteId.isBlank()) {
+            return atual.getAgenteId() == null ? null
+                    : "Esta loja já tem um agente registrado; este agente não se identificou (versão antiga?).";
+        }
+        String id = agenteId.trim();
+        if (id.length() > 80 || !id.matches("[A-Za-z0-9._:-]+")) {
+            return "Identificação do agente inválida.";
+        }
+        if (atual.getAgenteId() == null) {
+            atual.setAgenteId(id);
+            return null;
+        }
+        return atual.getAgenteId().equals(id) ? null
+                : "Outro agente já está registrado para esta loja (só 1 agente por loja). Para trocar de computador, peça a liberação.";
+    }
+
     // Chave do cabeçalho X-Chave-Relatorio (aba administrativa) -> loja. Separada da chave do agente.
     @Transactional
     public Optional<LojaEntity> autenticarRelatorio(String chave) {

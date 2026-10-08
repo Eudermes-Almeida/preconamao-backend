@@ -38,6 +38,8 @@ public class CargaPricetabResource {
     // Nome da cópia enviada pelo agente (PRICETAB_<loja>_<data-hora>.TXT): confere com a chave
     // (regra 7 do multi-loja). Opcional: o agente antigo não manda.
     public static final String CABECALHO_NOME = "X-Nome-Arquivo";
+    // Identificação do agente (scripts/034): só 1 agente por loja. Opcional no agente PRICETAB antigo.
+    public static final String CABECALHO_AGENTE = "X-Agente-Id";
 
     @Inject
     CargaPricetabService cargaService;
@@ -56,9 +58,13 @@ public class CargaPricetabResource {
             @APIResponse(responseCode = "413", description = "Arquivo maior que o limite"),
     })
     @Operation(summary = "Recebe o PRICETAB.TXT da loja", description = "Corpo = bytes do arquivo como estão (Latin-1). O processamento (diferença com o banco, localização, pré-lista) roda em seguida; acompanhe por GET /cargas/{id}.")
-    public Response recebePricetab(@HeaderParam(CABECALHO_CHAVE) String chave,
-                                   @HeaderParam(CABECALHO_NOME) String nomeArquivo, byte[] arquivo) {
+    public Response recebePricetab(@HeaderParam(CABECALHO_CHAVE) String chave, @HeaderParam(CABECALHO_NOME) String nomeArquivo,
+                                   @HeaderParam(CABECALHO_AGENTE) String agenteId, byte[] arquivo) {
         return comLoja(chave, loja -> {
+            String recusa = lojaService.conferirAgente(loja, agenteId);
+            if (recusa != null) {
+                return Response.status(Response.Status.CONFLICT).entity(recusa).build();
+            }
             if (arquivo == null || arquivo.length == 0) {
                 return Response.status(Response.Status.BAD_REQUEST).entity("Arquivo vazio").build();
             }
@@ -72,16 +78,61 @@ public class CargaPricetabResource {
     }
 
     @POST
+    @Path("/rpinfo")
+    @Consumes(MediaType.WILDCARD)
+    @APIResponses(value = {
+            @APIResponse(responseCode = "202", description = "Pacote recebido; processado em alguns segundos", content = @Content(schema = @Schema(implementation = CargaRecebidaDTO.class))),
+            @APIResponse(responseCode = "200", description = "Foto igual à já aplicada ou ao último pacote (nada novo)"),
+            @APIResponse(responseCode = "400", description = "Pacote vazio ou ilegível"),
+            @APIResponse(responseCode = "401", description = "Chave da loja ausente ou inválida"),
+            @APIResponse(responseCode = "409", description = "Loja não configurada para o agente RPInfo, ou outro agente já registrado para a loja"),
+            @APIResponse(responseCode = "413", description = "Pacote maior que o limite"),
+    })
+    @Operation(summary = "Recebe o pacote do agente RPInfo da loja", description = "Corpo = JSON (compactado em gzip ou não) com tipo COMPLETA ou PARCIAL, hashFoto, departamentos, produtos (campos da RPInfo) e excluidos. O agente consulta a API da RPInfo dentro da loja; nada de fora entra na loja.")
+    public Response recebeRpinfo(@HeaderParam(CABECALHO_CHAVE) String chave, @HeaderParam(CABECALHO_AGENTE) String agenteId,
+                                 byte[] pacote) {
+        return comLoja(chave, loja -> {
+            if (agenteId == null || agenteId.isBlank()) {
+                return Response.status(Response.Status.BAD_REQUEST).entity("Cabeçalho " + CABECALHO_AGENTE + " obrigatório").build();
+            }
+            String recusa = lojaService.conferirAgente(loja, agenteId);
+            if (recusa != null) {
+                return Response.status(Response.Status.CONFLICT).entity(recusa).build();
+            }
+            if (pacote == null || pacote.length == 0) {
+                return Response.status(Response.Status.BAD_REQUEST).entity("Pacote vazio").build();
+            }
+            if (pacote.length > CargaPricetabService.TAMANHO_MAXIMO_BYTES) {
+                return Response.status(413).entity("Pacote maior que o limite de "
+                        + CargaPricetabService.TAMANHO_MAXIMO_BYTES / (1024 * 1024) + " MB").build();
+            }
+            Object resultado = cargaService.receberPacoteRpinfo(loja, pacote);
+            if (resultado instanceof CargaPricetabService.PacoteInvalido invalido) {
+                return Response.status(invalido.status()).entity(invalido.mensagem()).build();
+            }
+            CargaRecebidaDTO carga = (CargaRecebidaDTO) resultado;
+            return Response.status(carga.isNovaCarga() ? Response.Status.ACCEPTED : Response.Status.OK).entity(carga).build();
+        });
+    }
+
+    @POST
     @Path("/sinal")
     @Consumes(MediaType.APPLICATION_JSON)
     @APIResponses(value = {
             @APIResponse(responseCode = "200", description = "Sinal registrado", content = @Content(schema = @Schema(implementation = SinalRespostaDTO.class))),
             @APIResponse(responseCode = "401", description = "Chave da loja ausente ou inválida"),
+            @APIResponse(responseCode = "409", description = "Outro agente já registrado para a loja"),
     })
-    @Operation(summary = "Sinal de vida do agente", description = "Enviado a cada poucos minutos com o hash do PRICETAB da loja. Sem sinal além do limite, o app esconde os preços. enviarArquivo=true pede o reenvio do arquivo.")
-    public Response registraSinal(@HeaderParam(CABECALHO_CHAVE) String chave, SinalDTO sinal) {
-        return comLoja(chave, loja -> Response.ok(
-                cargaService.registrarSinal(loja, sinal == null ? null : sinal.getHash())).build());
+    @Operation(summary = "Sinal de vida do agente", description = "Enviado a cada poucos minutos com o hash do PRICETAB (ou da foto local, no agente RPInfo). Sem sinal além do limite, o app esconde os preços. enviarArquivo=true pede o reenvio; fazerCompleta=true pede uma coleta completa ao agente RPInfo.")
+    public Response registraSinal(@HeaderParam(CABECALHO_CHAVE) String chave, @HeaderParam(CABECALHO_AGENTE) String agenteId,
+                                  SinalDTO sinal) {
+        return comLoja(chave, loja -> {
+            String recusa = lojaService.conferirAgente(loja, agenteId);
+            if (recusa != null) {
+                return Response.status(Response.Status.CONFLICT).entity(recusa).build();
+            }
+            return Response.ok(cargaService.registrarSinal(loja, sinal == null ? null : sinal.getHash())).build();
+        });
     }
 
     @GET
