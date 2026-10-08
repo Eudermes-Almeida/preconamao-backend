@@ -44,7 +44,8 @@ public class AdminLojaResource {
     @Inject
     EntityManager entityManager;
 
-    public record CredencialApiDTO(String url, String usuario, String senha) {
+    // unidade: como a loja é identificada no sistema de gestão (RPInfo: CNPJ da unidade); opcional.
+    public record CredencialApiDTO(String url, String usuario, String senha, String unidade) {
     }
 
     @PUT
@@ -69,11 +70,12 @@ public class AdminLojaResource {
                     .orElseGet(() -> CredencialApiEntity.builder().lojaId(lojaId).build());
             credencial.setUrl(dados.url().trim());
             credencial.setUsuario(dados.usuario().trim());
+            credencial.setUnidade(vazio(dados.unidade()) ? null : dados.unidade().trim());
             credencial.setSegredoCifrado(cifra.cifrar(dados.senha()));
             credencial.setAtualizadaEm(OffsetDateTime.now());
             entityManager.merge(credencial);
             return Response.ok(Map.of("loja", lojaId, "url", credencial.getUrl(), "usuario", credencial.getUsuario(),
-                    "gravada", true)).build();
+                    "unidade", String.valueOf(credencial.getUnidade()), "gravada", true)).build();
         });
     }
 

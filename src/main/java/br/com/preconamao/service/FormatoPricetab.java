@@ -9,13 +9,17 @@ import java.nio.charset.StandardCharsets;
 import java.util.Map;
 
 // Parâmetros da ficha do formato (formato_origem.parametros, scripts/027). Ausente = PRICETAB de
-// 40 posições, como a loja piloto sempre foi.
+// 40 posições, como a loja piloto sempre foi. API: tamanhoPagina e dialeto (scripts/031: SIMPLES =
+// API simulada v1; RPINFO = API da RPInfo).
 public record FormatoPricetab(String separador, int tamanhoDescricao, boolean descricaoCortada,
                               boolean emendarLinhas, Charset codificacao, boolean internoSemKgEhUnidade,
-                              int tamanhoPagina) {
+                              int tamanhoPagina, String dialeto) {
+
+    public static final String DIALETO_SIMPLES = "SIMPLES";
+    public static final String DIALETO_RPINFO = "RPINFO";
 
     public static final FormatoPricetab PADRAO = new FormatoPricetab("|", 40, false, true,
-            StandardCharsets.ISO_8859_1, true, 500);
+            StandardCharsets.ISO_8859_1, true, 500, DIALETO_SIMPLES);
 
     private static final Jsonb JSONB = JsonbBuilder.create();
 
@@ -32,7 +36,8 @@ public record FormatoPricetab(String separador, int tamanhoDescricao, boolean de
                 booleano(p.get("emendarLinhas"), PADRAO.emendarLinhas()),
                 p.get("codificacao") == null ? PADRAO.codificacao() : Charset.forName(p.get("codificacao").toString()),
                 booleano(p.get("internoSemKgEhUnidade"), PADRAO.internoSemKgEhUnidade()),
-                inteiro(p.get("tamanhoPagina"), PADRAO.tamanhoPagina()));
+                inteiro(p.get("tamanhoPagina"), PADRAO.tamanhoPagina()),
+                texto(p.get("dialeto"), PADRAO.dialeto()));
     }
 
     private static String texto(Object valor, String padrao) {

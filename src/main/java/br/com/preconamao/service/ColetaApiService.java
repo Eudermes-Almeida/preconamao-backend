@@ -22,6 +22,7 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.time.LocalDate;
 import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -59,7 +60,7 @@ public class ColetaApiService {
     private final HttpClient http = HttpClient.newBuilder().version(HttpClient.Version.HTTP_1_1).connectTimeout(TEMPO_CONEXAO).build();
     private final Jsonb jsonb = JsonbBuilder.create();
 
-    record Acesso(String url, String usuario, String segredo, int tamanhoPagina) {
+    record Acesso(String url, String usuario, String segredo, int tamanhoPagina, String dialeto, String unidade) {
     }
 
     @Scheduled(every = "1m", delayed = "40s", concurrentExecution = Scheduled.ConcurrentExecution.SKIP)
@@ -88,9 +89,10 @@ public class ColetaApiService {
                 if (credencial == null) {
                     throw new IllegalStateException("loja sem credencial de API cadastrada");
                 }
+                FormatoPricetab formato = FormatoPricetab.de(lojaService.formato(loja));
                 return new Acesso(credencial.getUrl().replaceAll("/+$", ""), credencial.getUsuario(),
-                        cifra.decifrar(credencial.getSegredoCifrado()),
-                        FormatoPricetab.de(lojaService.formato(loja)).tamanhoPagina());
+                        cifra.decifrar(credencial.getSegredoCifrado()), formato.tamanhoPagina(), formato.dialeto(),
+                        credencial.getUnidade());
             });
         } catch (Exception e) {
             Log.warnf("Coleta da API da loja %d não começou: %s", lojaId, e.getMessage());
@@ -99,7 +101,10 @@ public class ColetaApiService {
 
         List<Map<String, Object>> itens;
         try {
-            itens = converter(baixarTudo(acesso));
+            // Cada sistema de gestão fala o seu "dialeto" (scripts/031); todos viram o formato padrão.
+            itens = FormatoPricetab.DIALETO_RPINFO.equals(acesso.dialeto())
+                    ? new ColetaRpinfo(http, jsonb).baixarTudo(acesso, LocalDate.now())
+                    : converter(baixarTudo(acesso));
         } catch (Exception e) {
             // A mensagem nunca leva o segredo (só status/endereço).
             Log.warnf("Coleta da API da loja %d falhou: %s (tenta de novo no próximo ciclo)", lojaId, e.getMessage());
@@ -192,23 +197,11 @@ public class ColetaApiService {
             Map<String, Object> promocao = (Map<String, Object>) bruto.get("promocao");
             Map<String, Object> atacado = (Map<String, Object>) bruto.get("precoAtacado");
             for (Object codigoBruto : (List<Object>) bruto.getOrDefault("codigosBarras", List.of())) {
-                String codigoOrigem = codigoBruto instanceof BigDecimal n ? n.toPlainString() : String.valueOf(codigoBruto).trim();
-                if (!codigoOrigem.matches("\\d{1,14}")) {
+                Map<String, Object> item = novoItem(porCodigo, codigoBruto, descricao, texto(bruto.get("secao")),
+                        texto(bruto.get("unidade")), preco);
+                if (item == null) {
                     continue;
                 }
-                String codigo = CodigoBarras.canonico(codigoOrigem);
-                Map<String, Object> item = new LinkedHashMap<>();
-                item.put("codigo", codigo);
-                item.put("codigoOrigem", codigoOrigem);
-                item.put("descricao", descricao.length() > 120 ? descricao.substring(0, 120) : descricao);
-                item.put("descricaoCompleta", descricao);
-                item.put("secao", texto(bruto.get("secao")));
-                item.put("unidade", texto(bruto.get("unidade")));
-                item.put("preco", preco);
-                Map<String, Object> repetido = porCodigo.get(codigo);
-                // Mesmo código em dois produtos com preços diferentes: sem preço (regra 19).
-                item.put("semPreco", repetido != null && !preco.equals(repetido.get("preco")) ? ProdutoEntity.SEM_PRECO_CONFLITO
-                        : preco == 0 ? ProdutoEntity.SEM_PRECO_ZERO : null);
                 item.put("promocao", promocao == null ? null : centavos(promocao.get("preco")));
                 item.put("promocaoInicio", promocao == null ? null : texto(promocao.get("inicio")));
                 item.put("promocaoFim", promocao == null ? null : texto(promocao.get("fim")));
@@ -216,16 +209,50 @@ public class ColetaApiService {
                 item.put("atacadoQuantidade", atacado == null || atacado.get("quantidadeMinima") == null ? null
                         : ((Number) atacado.get("quantidadeMinima")).intValue());
                 item.put("condicao", texto(bruto.get("condicao")));
-                porCodigo.put(codigo, item);
             }
         }
-        // Ordem fixa: o mesmo conteúdo dá sempre o mesmo hash.
+        return ordenados(porCodigo);
+    }
+
+    // Uma linha do formato padrão (um código de barras), já guardada em porCodigo; promoção, atacado
+    // e condição ficam vazios (quem chama preenche). Código inválido -> null (a linha não entra).
+    static Map<String, Object> novoItem(Map<String, Map<String, Object>> porCodigo, Object codigoBruto, String descricao,
+                                        String secao, String unidade, Integer preco) {
+        String codigoOrigem = codigoBruto instanceof BigDecimal n ? n.toPlainString() : String.valueOf(codigoBruto).trim();
+        if (!codigoOrigem.matches("\\d{1,14}")) {
+            return null;
+        }
+        String codigo = CodigoBarras.canonico(codigoOrigem);
+        Map<String, Object> item = new LinkedHashMap<>();
+        item.put("codigo", codigo);
+        item.put("codigoOrigem", codigoOrigem);
+        item.put("descricao", descricao.length() > 120 ? descricao.substring(0, 120) : descricao);
+        item.put("descricaoCompleta", descricao);
+        item.put("secao", secao);
+        item.put("unidade", unidade);
+        item.put("preco", preco);
+        Map<String, Object> repetido = porCodigo.get(codigo);
+        // Mesmo código em dois produtos com preços diferentes: sem preço (regra 19).
+        item.put("semPreco", repetido != null && !preco.equals(repetido.get("preco")) ? ProdutoEntity.SEM_PRECO_CONFLITO
+                : preco == 0 ? ProdutoEntity.SEM_PRECO_ZERO : null);
+        item.put("promocao", null);
+        item.put("promocaoInicio", null);
+        item.put("promocaoFim", null);
+        item.put("atacado", null);
+        item.put("atacadoQuantidade", null);
+        item.put("condicao", null);
+        porCodigo.put(codigo, item);
+        return item;
+    }
+
+    // Ordem fixa: o mesmo conteúdo dá sempre o mesmo hash.
+    static List<Map<String, Object>> ordenados(Map<String, Map<String, Object>> porCodigo) {
         List<Map<String, Object>> itens = new ArrayList<>(porCodigo.values());
         itens.sort(Comparator.comparing(i -> (String) i.get("codigo")));
         return itens;
     }
 
-    private static String texto(Object valor) {
+    static String texto(Object valor) {
         return valor == null ? null : valor.toString();
     }
 

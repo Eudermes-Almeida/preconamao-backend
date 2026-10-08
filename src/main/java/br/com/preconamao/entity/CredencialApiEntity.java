@@ -30,6 +30,10 @@ public class CredencialApiEntity {
     @Column(name = "usuario", nullable = false, length = 120)
     private String usuario;
 
+    // Como a loja é identificada dentro do sistema de gestão (RPInfo: CNPJ da unidade). Não é segredo.
+    @Column(name = "unidade", length = 40)
+    private String unidade;
+
     // Nunca sai do servidor: nem em log, nem em relatório, nem em resposta.
     @ToString.Exclude
     @Column(name = "segredo_cifrado", nullable = false, columnDefinition = "TEXT")

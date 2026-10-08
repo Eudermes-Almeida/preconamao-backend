@@ -16,7 +16,7 @@ class CargaPricetabInterpretarTest {
     private final CargaPricetabService service = new CargaPricetabService();
 
     private static final FormatoPricetab FORMATO_16 = new FormatoPricetab("|", 16, true, true,
-            StandardCharsets.ISO_8859_1, false, 500);
+            StandardCharsets.ISO_8859_1, false, 500, FormatoPricetab.DIALETO_SIMPLES);
 
     private CargaPricetabService.Interpretacao interpretar(String texto) {
         return service.interpretar(texto.getBytes(StandardCharsets.ISO_8859_1), FormatoPricetab.PADRAO);
