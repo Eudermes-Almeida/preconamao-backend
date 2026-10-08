@@ -40,6 +40,10 @@ public class ProdutoEntity {
     @Column(name = "codigo_origem", length = 20)
     private String codigoOrigem;
 
+    // Código do produto no ERP (RPInfo "Codigo"), comum ao código principal e aos auxiliares (scripts/033).
+    @Column(name = "codigo_interno_origem", length = 30)
+    private String codigoInternoOrigem;
+
     // Como veio do PRICETAB (abreviada: "IOG BATAVO 170G MOR").
     @Column(name = "descricao", nullable = false, length = 120)
     private String descricao;

@@ -29,6 +29,8 @@ public class CargaPricetabEntity {
     public static final String RETIDA = "RETIDA";
     public static final String ERRO = "ERRO";
     public static final String IGNORADA = "IGNORADA";
+    public static final String COMPLETA = "COMPLETA";
+    public static final String PARCIAL = "PARCIAL";
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
@@ -87,6 +89,12 @@ public class CargaPricetabEntity {
     // PRICETAB (agente da loja) ou API (coleta do servidor).
     @Column(name = "origem", nullable = false, length = 10)
     private String origem;
+
+    // COMPLETA (o que não veio é inativado) ou PARCIAL (coleta incremental: só os produtos do ERP
+    // informados podem perder códigos) — scripts/033.
+    @Builder.Default
+    @Column(name = "tipo", nullable = false, length = 10)
+    private String tipo = COMPLETA;
 
     // Nome da cópia enviada pelo agente (PRICETAB_<loja>_<data-hora>.TXT): confere com a chave.
     @Column(name = "nome_arquivo", length = 120)

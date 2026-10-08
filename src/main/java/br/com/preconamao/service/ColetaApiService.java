@@ -23,7 +23,9 @@ import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.LocalDate;
+import java.time.LocalTime;
 import java.time.OffsetDateTime;
+import java.time.ZonedDateTime;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
@@ -73,37 +75,66 @@ public class ColetaApiService {
         for (LojaEntity loja : lojas) {
             int intervalo = loja.getIntervaloColetaMin() == null ? INTERVALO_PADRAO_MIN : loja.getIntervaloColetaMin();
             if (loja.getUltimaColetaEm() == null || !loja.getUltimaColetaEm().isAfter(agora.minusMinutes(intervalo).plusSeconds(5))) {
-                coletar(loja.getId());
+                coletar(loja.getId(), false);
             }
         }
     }
 
+    // Coleta incremental (scripts/033, proposta de 08/10/2026): entre duas coletas COMPLETAS, só o
+    // que mudou. A completa (conferência) é 1 vez por dia a partir das 3h (horário de Brasília), na
+    // 1ª coleta da loja, no "coletar agora" e sempre no dialeto SIMPLES (que não tem incremental).
+    static final LocalTime HORA_COMPLETA = LocalTime.of(3, 0);
+    // Folga no "desde quando": o ERP pode gravar algo durante a nossa coleta, e os relógios diferem.
+    static final Duration FOLGA_INCREMENTAL = Duration.ofMinutes(10);
+
+    static boolean precisaCompleta(OffsetDateTime ultimaCompleta, OffsetDateTime incrementalDesde, OffsetDateTime agora) {
+        if (ultimaCompleta == null || incrementalDesde == null) {
+            return true;
+        }
+        ZonedDateTime agoraErp = agora.atZoneSameInstant(ColetaRpinfo.FUSO_ERP);
+        ZonedDateTime marco = agoraErp.toLocalDate().atTime(HORA_COMPLETA).atZone(ColetaRpinfo.FUSO_ERP);
+        if (agoraErp.isBefore(marco)) {
+            marco = marco.minusDays(1);
+        }
+        return ultimaCompleta.isBefore(marco.toOffsetDateTime());
+    }
+
     // Devolve o que aconteceu (para o log e para o botão "coletar agora" do laboratório).
-    public String coletar(Integer lojaId) {
+    // completaForcada: o "coletar agora" faz a completa; o laboratório pode pedir a incremental.
+    public String coletar(Integer lojaId, boolean completaForcada) {
+        OffsetDateTime inicio = OffsetDateTime.now();
         Acesso acesso;
+        OffsetDateTime desde;
         try {
-            acesso = QuarkusTransaction.requiringNew().call(() -> {
+            Object[] preparo = QuarkusTransaction.requiringNew().call(() -> {
                 LojaEntity loja = entityManager.find(LojaEntity.class, lojaId);
-                loja.setUltimaColetaEm(OffsetDateTime.now());
+                loja.setUltimaColetaEm(inicio);
                 CredencialApiEntity credencial = entityManager.find(CredencialApiEntity.class, lojaId);
                 if (credencial == null) {
                     throw new IllegalStateException("loja sem credencial de API cadastrada");
                 }
                 FormatoPricetab formato = FormatoPricetab.de(lojaService.formato(loja));
-                return new Acesso(credencial.getUrl().replaceAll("/+$", ""), credencial.getUsuario(),
+                boolean incremental = !completaForcada && FormatoPricetab.DIALETO_RPINFO.equals(formato.dialeto())
+                        && !precisaCompleta(loja.getUltimaColetaCompletaEm(), loja.getIncrementalDesde(), inicio);
+                return new Object[]{new Acesso(credencial.getUrl().replaceAll("/+$", ""), credencial.getUsuario(),
                         cifra.decifrar(credencial.getSegredoCifrado()), formato.tamanhoPagina(), formato.dialeto(),
-                        credencial.getUnidade());
+                        credencial.getUnidade()), incremental ? loja.getIncrementalDesde().minus(FOLGA_INCREMENTAL) : null};
             });
+            acesso = (Acesso) preparo[0];
+            desde = (OffsetDateTime) preparo[1];
         } catch (Exception e) {
             Log.warnf("Coleta da API da loja %d não começou: %s", lojaId, e.getMessage());
             return "Não começou: " + e.getMessage();
         }
+        return desde == null ? coletarCompleta(lojaId, acesso, inicio) : coletarIncremental(lojaId, acesso, inicio, desde);
+    }
 
+    private String coletarCompleta(Integer lojaId, Acesso acesso, OffsetDateTime inicio) {
         List<Map<String, Object>> itens;
         try {
             // Cada sistema de gestão fala o seu "dialeto" (scripts/031); todos viram o formato padrão.
             itens = FormatoPricetab.DIALETO_RPINFO.equals(acesso.dialeto())
-                    ? new ColetaRpinfo(http, jsonb).baixarTudo(acesso, LocalDate.now())
+                    ? new ColetaRpinfo(http, jsonb).baixarTudo(acesso, LocalDate.now(ColetaRpinfo.FUSO_ERP))
                     : converter(baixarTudo(acesso));
         } catch (Exception e) {
             // A mensagem nunca leva o segredo (só status/endereço).
@@ -116,18 +147,54 @@ public class ColetaApiService {
         return QuarkusTransaction.requiringNew().call(() -> {
             LojaEntity loja = entityManager.find(LojaEntity.class, lojaId);
             loja.setUltimoSinalEm(OffsetDateTime.now());
+            loja.setUltimaColetaCompletaEm(inicio);
+            loja.setIncrementalDesde(inicio);
             lojaService.registrarHashInformado(loja, hash);
             if (hash.equals(loja.getHashAplicado())) {
-                return "Sem mudança (" + itens.size() + " produtos): só o sinal.";
+                return "Completa: sem mudança (" + itens.size() + " produtos): só o sinal.";
             }
             CargaPricetabEntity ultima = cargaService.ultimaCarga(lojaId);
             if (ultima != null && hash.equals(ultima.getHash())) {
-                return "Mesmos dados da carga nº " + ultima.getId() + " (" + ultima.getSituacao() + ").";
+                return "Completa: mesmos dados da carga nº " + ultima.getId() + " (" + ultima.getSituacao() + ").";
             }
             CargaPricetabEntity carga = cargaService.registrar(loja, CargaPricetabEntity.RECEBIDA, LojaEntity.ORIGEM_API,
                     null, conteudo, hash, ".json");
-            Log.infof("Coleta da API da loja %d: dados mudaram, carga nº %d na fila (%d produtos)", lojaId, carga.getId(), itens.size());
-            return "Dados mudaram: carga nº " + carga.getId() + " na fila (" + itens.size() + " produtos).";
+            Log.infof("Coleta completa da API da loja %d: dados mudaram, carga nº %d na fila (%d produtos)", lojaId, carga.getId(), itens.size());
+            return "Completa: dados mudaram, carga nº " + carga.getId() + " na fila (" + itens.size() + " produtos).";
+        });
+    }
+
+    // Só o que mudou desde a última coleta (com a folga). Nada mudou -> só o sinal; mudou -> carga
+    // PARCIAL na mesma fila (a trava dos 20% vale para ela também).
+    private String coletarIncremental(Integer lojaId, Acesso acesso, OffsetDateTime inicio, OffsetDateTime desde) {
+        ColetaRpinfo.Parcial parcial;
+        try {
+            parcial = new ColetaRpinfo(http, jsonb).baixarDesde(acesso, LocalDate.now(ColetaRpinfo.FUSO_ERP), desde);
+        } catch (Exception e) {
+            Log.warnf("Coleta incremental da API da loja %d falhou: %s (tenta de novo no próximo ciclo)", lojaId, e.getMessage());
+            return "Falhou: " + e.getMessage();
+        }
+        boolean vazia = parcial.internos().isEmpty();
+        byte[] conteudo = jsonb.toJson(Map.of("itens", parcial.itens(), "internos", parcial.internos())).getBytes(StandardCharsets.UTF_8);
+        String hash = LojaService.sha256(conteudo);
+        return QuarkusTransaction.requiringNew().call(() -> {
+            LojaEntity loja = entityManager.find(LojaEntity.class, lojaId);
+            loja.setUltimoSinalEm(OffsetDateTime.now());
+            loja.setIncrementalDesde(inicio);
+            // A mesma mudança volta enquanto estiver dentro da folga: aplicar de novo não muda nada.
+            CargaPricetabEntity ultima = cargaService.ultimaCarga(lojaId);
+            if (vazia || hash.equals(loja.getHashAplicado()) || ultima != null && hash.equals(ultima.getHash())) {
+                return "Incremental: sem mudança desde " + desde.atZoneSameInstant(ColetaRpinfo.FUSO_ERP).toLocalDateTime()
+                        + " (" + parcial.internos().size() + " produto(s) já aplicados): só o sinal.";
+            }
+            lojaService.registrarHashInformado(loja, hash);
+            CargaPricetabEntity carga = cargaService.registrar(loja, CargaPricetabEntity.RECEBIDA, LojaEntity.ORIGEM_API,
+                    null, conteudo, hash, ".json");
+            carga.setTipo(CargaPricetabEntity.PARCIAL);
+            Log.infof("Coleta incremental da API da loja %d: %d produto(s) do ERP mudaram, carga nº %d na fila",
+                    lojaId, parcial.internos().size(), carga.getId());
+            return "Incremental: " + parcial.internos().size() + " produto(s) do ERP mudaram, carga nº " + carga.getId()
+                    + " na fila (" + parcial.itens().size() + " códigos).";
         });
     }
 

@@ -15,6 +15,7 @@ import jakarta.ws.rs.PUT;
 import jakarta.ws.rs.Path;
 import jakarta.ws.rs.PathParam;
 import jakarta.ws.rs.Produces;
+import jakarta.ws.rs.QueryParam;
 import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
 import org.eclipse.microprofile.openapi.annotations.Operation;
@@ -81,12 +82,14 @@ public class AdminLojaResource {
 
     @POST
     @Path("/{id}/coletar-agora")
-    @Operation(summary = "Coleta a API da loja agora (sem esperar o intervalo)")
-    public Response coletarAgora(@HeaderParam("X-Chave-Relatorio") String chave, @PathParam("id") Integer lojaId) {
+    @Operation(summary = "Coleta a API da loja agora (sem esperar o intervalo)",
+            description = "Coleta completa; ?tipo=incremental faz a incremental (só o que mudou), se a loja já puder.")
+    public Response coletarAgora(@HeaderParam("X-Chave-Relatorio") String chave, @PathParam("id") Integer lojaId,
+                                 @QueryParam("tipo") String tipo) {
         if (!geral(chave)) {
             return Response.status(Response.Status.UNAUTHORIZED).entity("Só com a chave geral").build();
         }
-        return Response.ok(Map.of("resultado", coletaApiService.coletar(lojaId))).build();
+        return Response.ok(Map.of("resultado", coletaApiService.coletar(lojaId, !"incremental".equalsIgnoreCase(tipo)))).build();
     }
 
     private boolean geral(String chave) {

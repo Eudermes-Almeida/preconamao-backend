@@ -263,9 +263,11 @@ public class CargaPricetabService {
         }
     }
 
-    // Pega a carga pendente mais nova (as pendentes mais antigas da mesma loja ficam IGNORADAS: o
-    // arquivo novo já traz o estado atual) e aplica, tudo na mesma transação: se o banco rejeitar
+    // Pega a carga pendente mais nova e aplica, tudo na mesma transação: se o banco rejeitar
     // qualquer coisa, nada da carga fica gravado. Devolve o id processado ou null.
+    // COMPLETA: as pendentes mais antigas da mesma loja ficam IGNORADAS (ela já traz o estado atual).
+    // PARCIAL (coleta incremental): não substitui as anteriores — se houver pendentes mais antigas
+    // da mesma loja, aplica primeiro a mais antiga (as mudanças entram na ordem em que vieram).
     Long processarProxima() {
         @SuppressWarnings("unchecked")
         List<Number> ids = entityManager.createNativeQuery(
@@ -276,17 +278,30 @@ public class CargaPricetabService {
             return null;
         }
         CargaPricetabEntity carga = entityManager.find(CargaPricetabEntity.class, ids.get(0).longValue());
-        try {
-            entityManager.createQuery(
-                            "UPDATE CargaPricetabEntity c SET c.situacao = :ignorada, c.processadaEm = :agora, "
-                                    + "c.mensagem = :mensagem WHERE c.lojaId = :loja AND c.situacao = :recebida AND c.id < :id")
-                    .setParameter("ignorada", CargaPricetabEntity.IGNORADA)
-                    .setParameter("agora", OffsetDateTime.now())
-                    .setParameter("mensagem", "IGNORADA – substituída pela carga nº " + carga.getId() + ", mais nova.")
+        if (CargaPricetabEntity.PARCIAL.equals(carga.getTipo())) {
+            @SuppressWarnings("unchecked")
+            List<Number> maisAntiga = entityManager.createNativeQuery(
+                            "SELECT id FROM carga_pricetab WHERE situacao = 'RECEBIDA' AND loja_id = :loja "
+                                    + "ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED")
                     .setParameter("loja", carga.getLojaId())
-                    .setParameter("recebida", CargaPricetabEntity.RECEBIDA)
-                    .setParameter("id", carga.getId())
-                    .executeUpdate();
+                    .getResultList();
+            if (!maisAntiga.isEmpty()) {
+                carga = entityManager.find(CargaPricetabEntity.class, maisAntiga.get(0).longValue());
+            }
+        }
+        try {
+            if (CargaPricetabEntity.COMPLETA.equals(carga.getTipo())) {
+                entityManager.createQuery(
+                                "UPDATE CargaPricetabEntity c SET c.situacao = :ignorada, c.processadaEm = :agora, "
+                                        + "c.mensagem = :mensagem WHERE c.lojaId = :loja AND c.situacao = :recebida AND c.id < :id")
+                        .setParameter("ignorada", CargaPricetabEntity.IGNORADA)
+                        .setParameter("agora", OffsetDateTime.now())
+                        .setParameter("mensagem", "IGNORADA – substituída pela carga nº " + carga.getId() + ", mais nova.")
+                        .setParameter("loja", carga.getLojaId())
+                        .setParameter("recebida", CargaPricetabEntity.RECEBIDA)
+                        .setParameter("id", carga.getId())
+                        .executeUpdate();
+            }
             aplicar(carga);
             entityManager.flush();
         } catch (RuntimeException e) {
@@ -311,8 +326,20 @@ public class CargaPricetabService {
         carga.setProcessadaEm(OffsetDateTime.now());
 
         List<Map<String, Object>> itens;
+        List<Object> internos = null;
         String errosTexto = "";
-        if (LojaEntity.ORIGEM_API.equals(carga.getOrigem())) {
+        boolean parcial = CargaPricetabEntity.PARCIAL.equals(carga.getTipo());
+        if (parcial) {
+            // Coleta incremental: {"itens": [...formato padrão...], "internos": [códigos do ERP afetados]}.
+            Map<String, Object> pacote = jsonb.fromJson(new String(conteudo, StandardCharsets.UTF_8), Map.class);
+            itens = (List<Map<String, Object>>) pacote.getOrDefault("itens", List.of());
+            internos = (List<Object>) pacote.getOrDefault("internos", List.of());
+            carga.setLinhasTotal(itens.size());
+            carga.setLinhasInvalidas(0);
+            carga.setLinhasSemPreco((int) itens.stream().filter(i -> i.get("semPreco") != null).count());
+            carga.setCodigosRepetidos(0);
+            carga.setConflitosPreco(0);
+        } else if (LojaEntity.ORIGEM_API.equals(carga.getOrigem())) {
             // A coleta já entrega os itens no formato padrão (ColetaApiService).
             itens = jsonb.fromJson(new String(conteudo, StandardCharsets.UTF_8), List.class);
             carga.setLinhasTotal(itens.size());
@@ -353,11 +380,13 @@ public class CargaPricetabService {
 
         boolean liberada = loja.isLiberarProximaCarga();
         String resultadoJson = (String) entityManager.createNativeQuery(
-                        "SELECT CAST(aplicar_carga(:loja, CAST(:itens AS jsonb), :limite, :forcar) AS text)")
+                        "SELECT CAST(aplicar_carga(:loja, CAST(:itens AS jsonb), :limite, :forcar, CAST(:internos AS jsonb)) AS text)")
                 .setParameter("loja", loja.getId())
                 .setParameter("itens", jsonb.toJson(itens))
                 .setParameter("limite", loja.getLimiteInativacao())
                 .setParameter("forcar", liberada)
+                // Completa = JSON null (texto, para o parâmetro nunca ir como SQL NULL sem tipo).
+                .setParameter("internos", internos == null ? "null" : jsonb.toJson(internos.stream().map(String::valueOf).toList()))
                 .getSingleResult();
         Map<String, Object> resultado = jsonb.fromJson(resultadoJson, Map.class);
 
@@ -386,7 +415,8 @@ public class CargaPricetabService {
                 + "(ficam sem preço).", carga.getCodigosRepetidos(), carga.getConflitosPreco()) : "")
                 + (liberada ? " Carga LIBERADA manualmente" + (loja.getLiberadaPor() == null ? "" : " por " + loja.getLiberadaPor())
                 + (loja.getLiberadaEm() == null ? "" : " em " + loja.getLiberadaEm()) + "." : "");
-        carga.setMensagem(String.format("%d novo(s), %d preço(s) alterado(s), %d descrição(ões) alterada(s), "
+        carga.setMensagem((parcial ? "Parcial (" + internos.size() + " produto(s) do ERP): " : "")
+                + String.format("%d novo(s), %d preço(s) alterado(s), %d descrição(ões) alterada(s), "
                         + "%d inativado(s), %d reativado(s).", carga.getNovos(), carga.getPrecosAlterados(),
                 carga.getDescricoesAlteradas(), carga.getInativados(), carga.getReativados()) + extras + errosTexto);
 

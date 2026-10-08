@@ -112,6 +112,14 @@ public class LojaEntity {
     @Column(name = "ultima_coleta_em")
     private OffsetDateTime ultimaColetaEm;
 
+    // Coleta incremental (scripts/033): início da última coleta COMPLETA bem-sucedida e desde quando
+    // pedir as mudanças ao ERP na próxima incremental.
+    @Column(name = "ultima_coleta_completa_em")
+    private OffsetDateTime ultimaColetaCompletaEm;
+
+    @Column(name = "incremental_desde")
+    private OffsetDateTime incrementalDesde;
+
     // false = parceria pausada: o app trata como "loja indisponível" e nada é coletado.
     @Column(name = "ativa", nullable = false)
     private boolean ativa;

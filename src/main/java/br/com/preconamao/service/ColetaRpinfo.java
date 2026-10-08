@@ -16,10 +16,18 @@ import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
+import java.math.BigDecimal;
+import java.time.LocalDateTime;
+import java.time.OffsetDateTime;
+import java.time.ZoneId;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.TreeSet;
+import java.util.function.Consumer;
+import java.util.function.LongFunction;
 
 // Dialeto RPInfo ("RP Services") da coleta por API (scripts/031), conforme as respostas REAIS da
 // homologação (laboratorio/loja5_api_rpinfo/respostas, 07/10/2026):
@@ -44,47 +52,106 @@ class ColetaRpinfo {
         this.jsonb = jsonb;
     }
 
-    @SuppressWarnings("unchecked")
+    // Data/hora da RPInfo é a do ERP (horário de Brasília).
+    static final ZoneId FUSO_ERP = ZoneId.of("America/Sao_Paulo");
+    private static final DateTimeFormatter DATA_HORA = DateTimeFormatter.ofPattern("dd-MM-yyyy HH:mm:ss");
+
+    // Resultado da coleta incremental: as linhas (formato padrão) dos produtos que mudaram e os
+    // códigos internos do ERP afetados (mudaram, foram desativados ou excluídos).
+    record Parcial(List<Map<String, Object>> itens, List<String> internos) {
+    }
+
+    // Coleta COMPLETA: todos os produtos ativos.
     List<Map<String, Object>> baixarTudo(ColetaApiService.Acesso acesso, LocalDate hoje) throws IOException, InterruptedException {
+        long inicio = System.currentTimeMillis();
+        Map<String, String> departamentos = iniciar(acesso);
+        Map<String, Map<String, Object>> porCodigo = new LinkedHashMap<>();
+        Contagem contagem = new Contagem();
+        String unidade = unidade(acesso);
+        int paginas = paginar(acesso, "produtos", "Codigo",
+                ultimo -> "/v3.2/produtounidade/listaprodutos/" + ultimo + "/unidade/" + unidade + "/detalhado/ativos?limit=" + acesso.tamanhoPagina(),
+                produto -> converter(produto, departamentos, hoje, porCodigo, contagem));
+        Log.infof("Coleta RPInfo completa: %d páginas em %d ms; %d produtos -> %d códigos; fora: %d \"não encontrado\", %d caixas sem preço",
+                paginas, System.currentTimeMillis() - inicio, contagem.produtos, porCodigo.size(), contagem.naoEncontrado, contagem.caixas);
+        return ColetaApiService.ordenados(porCodigo);
+    }
+
+    // Coleta INCREMENTAL: produtos com DataHoraManutencao a partir de "desde" (rota SEM /ativos: o
+    // desativado também é mudança e vem com Ativo = false) + excluídos desde o dia de "desde"
+    // (a rota de excluídos só aceita o dia). Normalmente 4 chamadas: login, departamentos,
+    // mudanças e excluídos.
+    Parcial baixarDesde(ColetaApiService.Acesso acesso, LocalDate hoje, OffsetDateTime desde) throws IOException, InterruptedException {
+        long inicio = System.currentTimeMillis();
+        Map<String, String> departamentos = iniciar(acesso);
+        Map<String, Map<String, Object>> porCodigo = new LinkedHashMap<>();
+        Set<String> internos = new TreeSet<>();
+        Contagem contagem = new Contagem();
+        String unidade = unidade(acesso);
+        LocalDateTime desdeErp = desde.atZoneSameInstant(FUSO_ERP).toLocalDateTime();
+        String dataHora = desdeErp.format(DATA_HORA).replace(" ", "%20");
+        int paginas = paginar(acesso, "produtos", "Codigo",
+                ultimo -> "/v3.2/produtounidade/listaprodutos/" + ultimo + "/unidade/" + unidade + "/detalhado/dataHoraManutencao/"
+                        + dataHora + "?limit=" + acesso.tamanhoPagina(),
+                produto -> {
+                    internos.add(interno(produto.get("Codigo")));
+                    converter(produto, departamentos, hoje, porCodigo, contagem);
+                });
+        int mudados = internos.size();
+        paginas += paginar(acesso, "excluidos", "codigoProduto",
+                ultimo -> "/v1.1/produto/excluidos/lastid/" + ultimo + "/dataexclusao/" + desdeErp.toLocalDate().format(DATA),
+                excluido -> internos.add(interno(excluido.get("codigoProduto"))));
+        Log.infof("Coleta RPInfo incremental desde %s: %d páginas em %d ms; %d produtos mudados, %d excluídos -> %d códigos",
+                desdeErp, paginas, System.currentTimeMillis() - inicio, mudados, internos.size() - mudados, porCodigo.size());
+        return new Parcial(ColetaApiService.ordenados(porCodigo), List.copyOf(internos));
+    }
+
+    // Login + nomes dos departamentos (o produto só traz o código).
+    @SuppressWarnings("unchecked")
+    private Map<String, String> iniciar(ColetaApiService.Acesso acesso) throws IOException, InterruptedException {
         if (acesso.unidade() == null || acesso.unidade().isBlank()) {
             throw new IOException("credencial sem a unidade (CNPJ da loja no sistema RPInfo)");
         }
-        long inicio = System.currentTimeMillis();
         token = pedirToken(acesso);
-
         Map<String, String> departamentos = new HashMap<>();
         Map<String, Object> respostaDeptos = (Map<String, Object>) get(acesso, "/v1.1/departamentos", "departamentos").get("response");
         for (Map<String, Object> d : (List<Map<String, Object>>) respostaDeptos.getOrDefault("content", List.of())) {
             departamentos.put(ColetaApiService.texto(d.get("codigo")), ColetaApiService.texto(d.get("descricao")));
         }
+        return departamentos;
+    }
 
-        Map<String, Map<String, Object>> porCodigo = new LinkedHashMap<>();
-        Contagem contagem = new Contagem();
+    private static String unidade(ColetaApiService.Acesso acesso) {
+        return URLEncoder.encode(acesso.unidade().trim(), StandardCharsets.UTF_8);
+    }
+
+    static String interno(Object codigo) {
+        return codigo instanceof BigDecimal n ? n.toPlainString() : String.valueOf(codigo);
+    }
+
+    // Paginação da RPInfo pelo último código: a próxima página começa no código do último item; o
+    // fim é a página incompleta ou vazia (depois da última vem a lista vazia com status ok —
+    // confirmado na homologação em 08/10). Devolve o número de chamadas.
+    @SuppressWarnings("unchecked")
+    private int paginar(ColetaApiService.Acesso acesso, String lista, String campoCodigo, LongFunction<String> caminho,
+                        Consumer<Map<String, Object>> cadaItem) throws IOException, InterruptedException {
         long ultimoCodigo = 0;
         int paginas = 0;
-        String unidade = URLEncoder.encode(acesso.unidade().trim(), StandardCharsets.UTF_8);
         while (paginas < MAXIMO_PAGINAS) {
-            Map<String, Object> resposta = (Map<String, Object>) get(acesso, "/v3.2/produtounidade/listaprodutos/" + ultimoCodigo
-                    + "/unidade/" + unidade + "/detalhado/ativos?limit=" + acesso.tamanhoPagina(), "página " + (paginas + 1)).get("response");
+            Map<String, Object> resposta = (Map<String, Object>) get(acesso, caminho.apply(ultimoCodigo),
+                    lista + ", página " + (paginas + 1)).get("response");
             paginas++;
-            List<Map<String, Object>> produtos = (List<Map<String, Object>>) resposta.getOrDefault("produtos", List.of());
-            for (Map<String, Object> produto : produtos) {
-                converter(produto, departamentos, hoje, porCodigo, contagem);
-            }
-            // Fim: página incompleta ou vazia (depois da última vem "produtos": [] com status ok —
-            // confirmado na homologação em 08/10).
-            if (produtos.size() < acesso.tamanhoPagina()) {
+            List<Map<String, Object>> itens = (List<Map<String, Object>>) resposta.getOrDefault(lista, List.of());
+            itens.forEach(cadaItem);
+            if (itens.size() < acesso.tamanhoPagina()) {
                 break;
             }
-            long proximo = ((Number) produtos.get(produtos.size() - 1).get("Codigo")).longValue();
+            long proximo = ((Number) itens.get(itens.size() - 1).get(campoCodigo)).longValue();
             if (proximo <= ultimoCodigo) {
-                throw new IOException("paginação não avançou (último Codigo " + proximo + ")");
+                throw new IOException("paginação não avançou (último código " + proximo + ")");
             }
             ultimoCodigo = proximo;
         }
-        Log.infof("Coleta RPInfo: %d páginas em %d ms; %d produtos -> %d códigos; fora: %d \"não encontrado\", %d caixas sem preço",
-                paginas, System.currentTimeMillis() - inicio, contagem.produtos, porCodigo.size(), contagem.naoEncontrado, contagem.caixas);
-        return ColetaApiService.ordenados(porCodigo);
+        return paginas;
     }
 
     static final class Contagem {
@@ -145,9 +212,13 @@ class ColetaRpinfo {
         String unidade = "P".equals(p.get("Balanca")) || "S".equals(p.get("Balanca")) ? "KG"
                 : codigoPrincipal != null && codigoPrincipal.trim().matches("0{5}\\d*") ? null : "UN";
 
+        String codigoInterno = interno(p.get("Codigo"));
         Map<String, Object> principal = ColetaApiService.novoItem(porCodigo, codigoPrincipal, descricao, secao, unidade, preco);
-        if (principal != null && promocao != null) {
-            oferta(principal, promocao, inicioOferta, fim);
+        if (principal != null) {
+            principal.put("codigoInterno", codigoInterno);
+            if (promocao != null) {
+                oferta(principal, promocao, inicioOferta, fim);
+            }
         }
         for (Map<String, Object> alt : (List<Map<String, Object>>) p.getOrDefault("codBarrasAlterados", List.of())) {
             Integer proprio = positivo(ColetaApiService.centavos(alt.get("precoVenda")));
@@ -158,8 +229,11 @@ class ColetaRpinfo {
             }
             Map<String, Object> item = ColetaApiService.novoItem(porCodigo, alt.get("codigoBarras"), descricao, secao, unidade,
                     proprio != null ? proprio : preco);
-            if (item != null && proprio == null && promocao != null) {
-                oferta(item, promocao, inicioOferta, fim);
+            if (item != null) {
+                item.put("codigoInterno", codigoInterno);
+                if (proprio == null && promocao != null) {
+                    oferta(item, promocao, inicioOferta, fim);
+                }
             }
         }
     }
