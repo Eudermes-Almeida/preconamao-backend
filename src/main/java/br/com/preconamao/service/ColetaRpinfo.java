@@ -246,7 +246,7 @@ class ColetaRpinfo {
         return limpa.isEmpty() ? limpa : Character.toUpperCase(limpa.charAt(0)) + limpa.substring(1);
     }
 
-    private static void oferta(Map<String, Object> item, Integer promocao, LocalDate inicio, LocalDate fim) {
+    static void oferta(Map<String, Object> item, Integer promocao, LocalDate inicio, LocalDate fim) {
         item.put("promocao", promocao);
         item.put("promocaoInicio", inicio == null ? null : inicio.toString());
         item.put("promocaoFim", fim.toString());

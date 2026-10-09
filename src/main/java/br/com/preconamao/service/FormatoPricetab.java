@@ -18,6 +18,9 @@ public record FormatoPricetab(String separador, int tamanhoDescricao, boolean de
 
     public static final String DIALETO_SIMPLES = "SIMPLES";
     public static final String DIALETO_RPINFO = "RPINFO";
+    // Conector de banco (scripts/037): o agente lê a VIEW padrão (vw_simplifica_precos) no banco do
+    // ERP e envia as linhas como vieram; a conversão é ColetaViewPadrao.
+    public static final String DIALETO_VIEW = "VIEW_PADRAO";
     public static final String COLETA_SERVIDOR = "SERVIDOR";
     public static final String COLETA_AGENTE = "AGENTE";
 

@@ -116,6 +116,15 @@ public class CargaPricetabResource {
     }
 
     @POST
+    @Path("/banco")
+    @Consumes(MediaType.WILDCARD)
+    @Operation(summary = "Recebe o pacote do agente do conector de banco da loja", description = "Mesmo contrato de /cargas/rpinfo, com \"linhas\" = linhas da VIEW padrão vw_simplifica_precos (codigo_barras, descricao, preco, preco_promocional, promocao_ate, unidade, secao, codigo_interno, ativo) e \"excluidos\" = códigos internos. O agente lê o banco do ERP dentro da loja; nada de fora entra na loja.")
+    public Response recebeBanco(@HeaderParam(CABECALHO_CHAVE) String chave, @HeaderParam(CABECALHO_AGENTE) String agenteId,
+                                byte[] pacote) {
+        return recebeRpinfo(chave, agenteId, pacote);
+    }
+
+    @POST
     @Path("/sinal")
     @Consumes(MediaType.APPLICATION_JSON)
     @APIResponses(value = {

@@ -149,9 +149,10 @@ public class CargaPricetabService {
     public Object receberPacoteRpinfo(LojaEntity loja, byte[] corpo) {
         LojaEntity lojaAtual = entityManager.find(LojaEntity.class, loja.getId());
         FormatoPricetab formato = FormatoPricetab.de(lojaService.formato(lojaAtual));
+        boolean view = FormatoPricetab.DIALETO_VIEW.equals(formato.dialeto());
         if (!LojaEntity.ORIGEM_API.equals(lojaAtual.getTipoOrigem()) || !FormatoPricetab.COLETA_AGENTE.equals(formato.coleta())
-                || !FormatoPricetab.DIALETO_RPINFO.equals(formato.dialeto())) {
-            return new PacoteInvalido(409, "Loja não configurada para o agente RPInfo (formato \"API RPInfo (agente)\").");
+                || !(view || FormatoPricetab.DIALETO_RPINFO.equals(formato.dialeto()))) {
+            return new PacoteInvalido(409, "Loja não configurada para o agente (formato \"API RPInfo (agente)\" ou \"Banco de dados (agente)\").");
         }
         Map<String, Object> pacote;
         try {
@@ -193,14 +194,27 @@ public class CargaPricetabService {
         ColetaRpinfo.Contagem contagem = new ColetaRpinfo.Contagem();
         List<String> internos = new ArrayList<>();
         LocalDate hoje = LocalDate.now(ColetaRpinfo.FUSO_ERP);
-        for (Object item : (List<Object>) pacote.getOrDefault("produtos", List.of())) {
-            if (item instanceof Map<?, ?> produto) {
-                internos.add(ColetaRpinfo.interno(produto.get("Codigo")));
-                ColetaRpinfo.converter((Map<String, Object>) produto, departamentos, hoje, porCodigo, contagem);
+        if (view) {
+            // Conector de banco: "linhas" = as linhas da VIEW padrão como o banco devolveu.
+            for (Object item : (List<Object>) pacote.getOrDefault("linhas", List.of())) {
+                if (item instanceof Map<?, ?> linha) {
+                    internos.add(ColetaViewPadrao.interno(linha.get("codigo_interno")));
+                    ColetaViewPadrao.converter((Map<String, Object>) linha, hoje, porCodigo, contagem);
+                }
             }
-        }
-        for (Object excluido : (List<Object>) pacote.getOrDefault("excluidos", List.of())) {
-            internos.add(ColetaRpinfo.interno(excluido));
+            for (Object excluido : (List<Object>) pacote.getOrDefault("excluidos", List.of())) {
+                internos.add(ColetaViewPadrao.interno(excluido));
+            }
+        } else {
+            for (Object item : (List<Object>) pacote.getOrDefault("produtos", List.of())) {
+                if (item instanceof Map<?, ?> produto) {
+                    internos.add(ColetaRpinfo.interno(produto.get("Codigo")));
+                    ColetaRpinfo.converter((Map<String, Object>) produto, departamentos, hoje, porCodigo, contagem);
+                }
+            }
+            for (Object excluido : (List<Object>) pacote.getOrDefault("excluidos", List.of())) {
+                internos.add(ColetaRpinfo.interno(excluido));
+            }
         }
         List<Map<String, Object>> itens = ColetaApiService.ordenados(porCodigo);
         boolean completa = CargaPricetabEntity.COMPLETA.equals(tipo);
@@ -211,7 +225,7 @@ public class CargaPricetabService {
         CargaPricetabEntity carga = registrar(lojaAtual, CargaPricetabEntity.RECEBIDA, LojaEntity.ORIGEM_API,
                 null, conteudo, hashFoto, ".json");
         carga.setTipo(tipo);
-        Log.infof("Pacote %s do agente RPInfo da loja %d: %d produto(s) do ERP -> %d código(s); carga nº %d na fila",
+        Log.infof("Pacote %s do agente (" + formato.dialeto() + ") da loja %d: %d produto(s) do ERP -> %d código(s); carga nº %d na fila",
                 tipo, loja.getId(), contagem.produtos, itens.size(), carga.getId());
         CargaRecebidaDTO dto = paraDTO(carga, "Recebido; processamento em alguns segundos.");
         dto.setNovaCarga(true);
