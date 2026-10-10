@@ -198,7 +198,7 @@ public class CargaPricetabService {
             // Conector de banco: "linhas" = as linhas da VIEW padrão como o banco devolveu.
             for (Object item : (List<Object>) pacote.getOrDefault("linhas", List.of())) {
                 if (item instanceof Map<?, ?> linha) {
-                    internos.add(ColetaViewPadrao.interno(linha.get("codigo_interno")));
+                    internos.add(ColetaViewPadrao.interno(linha));
                     ColetaViewPadrao.converter((Map<String, Object>) linha, hoje, porCodigo, contagem);
                 }
             }

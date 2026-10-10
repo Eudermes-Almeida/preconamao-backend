@@ -12,7 +12,8 @@ import java.util.Map;
 //                                            validade de hoje em diante (vencida = preço normal)
 //   unidade                                  "KG" = vendido na balança; "UN" = unidade; outro = não sabe
 //   secao                                    vira a seção do produto (mapa da loja)
-//   codigo_interno                           código do produto no ERP (agrupa códigos auxiliares)
+//   codigo_interno                           código do produto no ERP (agrupa códigos auxiliares);
+//                                            sem ele, cada código de barras é um produto
 //   ativo                                    "N", "0" ou falso = fora da loja (não entra)
 // O agente manda as linhas como o banco devolveu (nomes das colunas em minúsculas); números podem
 // vir como número ou texto com ponto ou vírgula.
@@ -47,8 +48,7 @@ final class ColetaViewPadrao {
         if (item == null) {
             return;
         }
-        String interno = ColetaApiService.texto(linha.get("codigo_interno"));
-        item.put("codigoInterno", interno == null || interno.isBlank() ? null : interno.trim());
+        item.put("codigoInterno", interno(linha));
         Integer promocao = ColetaApiService.centavos(linha.get("preco_promocional"));
         LocalDate fim = data(linha.get("promocao_ate"));
         if (promocao != null && promocao > 0 && promocao < preco && fim != null && !hoje.isAfter(fim)) {
@@ -78,7 +78,15 @@ final class ColetaViewPadrao {
 
     static String interno(Object valor) {
         String texto = ColetaApiService.texto(valor);
-        return texto == null ? null : texto.trim();
+        return texto == null || texto.isBlank() ? null : texto.trim();
+    }
+
+    // Produto do ERP a que a linha pertence: codigo_interno; sem ele (VIEW sem a coluna, ou vazio), o
+    // próprio código de barras, para que um PARCIAL com ativo = N ou um código que sumiu da VIEW
+    // ainda tire o produto da loja (o agente manda o mesmo valor em "excluidos").
+    static String interno(Map<?, ?> linha) {
+        String interno = interno(linha.get("codigo_interno"));
+        return interno != null ? interno : interno(linha.get("codigo_barras"));
     }
 
     private static boolean inativo(Object ativo) {
