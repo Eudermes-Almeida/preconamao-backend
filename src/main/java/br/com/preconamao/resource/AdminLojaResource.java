@@ -9,6 +9,7 @@ import io.quarkus.narayana.jta.QuarkusTransaction;
 import jakarta.inject.Inject;
 import jakarta.persistence.EntityManager;
 import jakarta.ws.rs.Consumes;
+import jakarta.ws.rs.GET;
 import jakarta.ws.rs.HeaderParam;
 import jakarta.ws.rs.POST;
 import jakarta.ws.rs.PUT;
@@ -22,6 +23,9 @@ import org.eclipse.microprofile.openapi.annotations.Operation;
 import org.eclipse.microprofile.openapi.annotations.tags.Tag;
 
 import java.time.OffsetDateTime;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
@@ -98,6 +102,74 @@ public class AdminLojaResource {
             description = "Só marca: na próxima vez que o agente enviar o sinal (conexão de saída da loja), a resposta traz fazerCompleta=true.")
     public Response pedirCompleta(@HeaderParam("X-Chave-Relatorio") String chave, @PathParam("id") Integer lojaId) {
         return marcarLoja(chave, lojaId, loja -> loja.setPedirCompleta(true), "pedirCompleta");
+    }
+
+    // Situação de cada loja para o card "Lojas e integrações" do painel: como recebe os preços, o
+    // agente, o último sinal, se a foto informada pela loja é a aplicada e a última carga.
+    @GET
+    @Path("/situacao")
+    @Operation(summary = "Situação das lojas e das integrações",
+            description = "Por loja: origem dos preços, agente registrado, último sinal, foto em dia, última carga (e se está retida) e produtos ativos.")
+    public Response situacao(@HeaderParam("X-Chave-Relatorio") String chave) {
+        if (!geral(chave)) {
+            return Response.status(Response.Status.UNAUTHORIZED).entity("Só com a chave geral").build();
+        }
+        @SuppressWarnings("unchecked")
+        List<Object[]> linhas = entityManager.createNativeQuery("""
+                SELECT l.id, coalesce(l.nome_curto, l.nome), l.ativa, l.tipo_origem, f.nome,
+                       l.agente_id IS NOT NULL, l.ultimo_sinal_em, l.limite_sem_sinal_min,
+                       l.hash_aplicado IS NOT NULL AND l.hash_informado = l.hash_aplicado,
+                       l.hash_divergente_desde, l.alerta_ativo, l.liberar_proxima_carga, l.pedir_completa,
+                       l.ultima_coleta_completa_em,
+                       (SELECT count(*) FROM produtos p WHERE p.loja_id = l.id AND p.ativo),
+                       c.id, c.tipo, c.situacao, c.recebida_em, c.mensagem
+                  FROM loja l
+                  LEFT JOIN formato_origem f ON f.id = l.formato_id
+                  LEFT JOIN LATERAL (SELECT id, tipo, situacao, recebida_em, mensagem FROM carga_pricetab
+                                      WHERE loja_id = l.id ORDER BY id DESC LIMIT 1) c ON true
+                 ORDER BY l.id""").getResultList();
+        List<Map<String, Object>> lojas = new ArrayList<>();
+        for (Object[] l : linhas) {
+            Map<String, Object> loja = new LinkedHashMap<>();
+            loja.put("id", l[0]);
+            loja.put("nome", l[1]);
+            loja.put("ativa", l[2]);
+            loja.put("tipoOrigem", l[3]);
+            loja.put("formato", l[4]);
+            loja.put("agenteRegistrado", l[5]);
+            loja.put("ultimoSinalEm", l[6]);
+            loja.put("limiteSemSinalMin", l[7]);
+            loja.put("fotoEmDia", l[8]);
+            loja.put("divergenteDesde", l[9]);
+            loja.put("alerta", l[10]);
+            loja.put("cargaLiberada", l[11]);
+            loja.put("completaPedida", l[12]);
+            loja.put("ultimaCompletaEm", l[13]);
+            loja.put("produtosAtivos", ((Number) l[14]).longValue());
+            if (l[15] != null) {
+                Map<String, Object> carga = new LinkedHashMap<>();
+                carga.put("id", ((Number) l[15]).longValue());
+                carga.put("tipo", l[16]);
+                carga.put("situacao", l[17]);
+                carga.put("recebidaEm", l[18]);
+                carga.put("mensagem", l[19]);
+                loja.put("ultimaCarga", carga);
+            }
+            lojas.add(loja);
+        }
+        return Response.ok(lojas).build();
+    }
+
+    @POST
+    @Path("/{id}/liberar-carga")
+    @Operation(summary = "Libera a próxima carga da loja (carga retida pelas travas)",
+            description = "A próxima carga passa pelas travas (inativação e queda de preço) uma única vez; a retida volta para a fila no próximo sinal ou reenvio da loja. Fica registrado na mensagem da carga.")
+    public Response liberarCarga(@HeaderParam("X-Chave-Relatorio") String chave, @PathParam("id") Integer lojaId) {
+        return marcarLoja(chave, lojaId, loja -> {
+            loja.setLiberarProximaCarga(true);
+            loja.setLiberadaPor("painel administrativo");
+            loja.setLiberadaEm(OffsetDateTime.now());
+        }, "cargaLiberada");
     }
 
     @POST

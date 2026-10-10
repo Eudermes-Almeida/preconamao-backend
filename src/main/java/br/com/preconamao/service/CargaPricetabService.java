@@ -299,9 +299,16 @@ public class CargaPricetabService {
         boolean enviarArquivo = hashArquivo != null
                 && !hashArquivo.equals(lojaAtual.getHashAplicado())
                 && (ultima == null || !hashArquivo.equals(ultima.getHash()));
+        // O pedido de completa vale uma vez: entregue no sinal, desmarca. Esperar a completa chegar
+        // não serve: com a foto igual à já enviada o agente não manda nada, e ele refaria a leitura
+        // completa do banco a cada sinal, para sempre.
+        boolean fazerCompleta = lojaAtual.isPedirCompleta();
+        if (fazerCompleta) {
+            lojaAtual.setPedirCompleta(false);
+        }
         return SinalRespostaDTO.builder()
                 .enviarArquivo(enviarArquivo)
-                .fazerCompleta(lojaAtual.isPedirCompleta())
+                .fazerCompleta(fazerCompleta)
                 .hashAplicado(lojaAtual.getHashAplicado())
                 .ultimaCarga(ultima == null ? null : paraDTO(ultima, ultima.getMensagem()))
                 .build();
