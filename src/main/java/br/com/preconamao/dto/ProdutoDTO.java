@@ -36,6 +36,11 @@ public class ProdutoDTO {
     // valor total dela (o que o caixa cobra).
     private boolean etiquetaBalanca;
 
+    // Produto interno de balança que o arquivo da loja não diz se é por quilo ou por unidade
+    // (PRICETAB de 16 posições, sem "KG" na descrição): no hortifrúti e na padaria o app pergunta
+    // ao cliente.
+    private boolean precoBalancaIndefinido;
+
     // false = o app não pode garantir que o preço está atualizado (agente da loja sem sinal ou
     // arquivo da loja diferente do aplicado): o app esconde o preço. Etiqueta de balança é sempre
     // true (o valor vem impresso).

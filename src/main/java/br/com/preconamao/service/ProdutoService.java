@@ -233,9 +233,20 @@ public class ProdutoService {
                 .preListaItemId(entity.getPreListaItemId())
                 .vendidoPorKg(entity.isVendidoPorKg())
                 .precoKgCentavos(entity.isVendidoPorKg() ? entity.getPrecoCentavos() : null)
+                .precoBalancaIndefinido(!entity.isVendidoPorKg() && ehCodigoInterno(entity.getCodigoBarras()))
                 .precoConfiavel(situacao.confiavel())
                 .precoConferidoEm(situacao.conferidoEm() == null ? null : situacao.conferidoEm().toString())
                 .build();
+    }
+
+    // Código interno da loja (balança): 0000 + 9 dígitos, com 2 a 7 dígitos significativos — a
+    // mesma regra de eh_codigo_interno() no banco (script 025).
+    private static boolean ehCodigoInterno(String codigo) {
+        if (codigo == null || !codigo.matches("0000\\d{9}")) {
+            return false;
+        }
+        int significativos = codigo.replaceFirst("^0+", "").length();
+        return significativos >= 2 && significativos <= 7;
     }
 
     // A expandida, quando existe (produto anterior ao script 025 ou ainda sem carga: a original).
@@ -253,6 +264,7 @@ public class ProdutoService {
         dto.setCodigoBarras(codigoEtiqueta);
         dto.setPrecoCentavos(valorCentavos);
         dto.setEtiquetaBalanca(true);
+        dto.setPrecoBalancaIndefinido(false);
         return dto;
     }
 
