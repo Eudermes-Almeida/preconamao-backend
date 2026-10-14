@@ -224,6 +224,12 @@ public class ProdutoService {
     }
 
     private ProdutoDTO mapToDTO(ProdutoEntity entity, LojaService.SituacaoPreco situacao) {
+        // Interno de balança que o arquivo não marca como quilo: o nome cortado ainda pode dizer
+        // ("... K" = quilo; UN/BDJA = unidade). Se não disser, o app pergunta ao cliente.
+        boolean semUnidade = !entity.isVendidoPorKg() && ehCodigoInterno(entity.getCodigoBarras());
+        UnidadePeloNome.Unidade peloNome = semUnidade ? UnidadePeloNome.de(entity.getDescricao()) : null;
+        boolean porKg = entity.isVendidoPorKg() || peloNome == UnidadePeloNome.Unidade.KG;
+
         return ProdutoDTO.builder()
                 .codigoBarras(entity.getCodigoBarras())
                 .descricao(descricaoExibida(entity))
@@ -231,9 +237,9 @@ public class ProdutoService {
                 .precoCentavos(entity.getPrecoCentavos())
                 .localizacao(mapLocalizacao(entity.getLayoutPosicao()))
                 .preListaItemId(entity.getPreListaItemId())
-                .vendidoPorKg(entity.isVendidoPorKg())
-                .precoKgCentavos(entity.isVendidoPorKg() ? entity.getPrecoCentavos() : null)
-                .precoBalancaIndefinido(!entity.isVendidoPorKg() && ehCodigoInterno(entity.getCodigoBarras()))
+                .vendidoPorKg(porKg)
+                .precoKgCentavos(porKg ? entity.getPrecoCentavos() : null)
+                .precoBalancaIndefinido(semUnidade && peloNome == null)
                 .precoConfiavel(situacao.confiavel())
                 .precoConferidoEm(situacao.conferidoEm() == null ? null : situacao.conferidoEm().toString())
                 .build();
