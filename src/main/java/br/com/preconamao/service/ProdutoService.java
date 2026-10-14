@@ -240,6 +240,13 @@ public class ProdutoService {
         String motivoSemPreco = entity.getSemPreco() != null ? entity.getSemPreco()
                 : contexto.situacao().confiavel() ? null : "PROTECAO";
 
+        // Interno de balança sem unidade informada pela loja: o nome cortado ainda pode dizer
+        // ("... K" = quilo; UN/BDJA = unidade). Se não disser, o app pergunta ao cliente.
+        boolean semUnidade = entity.getCodigoBalanca() != null && !entity.isVendidoPorKg()
+                && entity.getUnidade() == null && !contexto.formato().internoSemKgEhUnidade();
+        UnidadePeloNome.Unidade peloNome = semUnidade ? UnidadePeloNome.de(entity.getDescricao()) : null;
+        boolean porKg = entity.isVendidoPorKg() || peloNome == UnidadePeloNome.Unidade.KG;
+
         return ProdutoDTO.builder()
                 .codigoBarras(entity.getCodigoBarras())
                 .descricao(cortada ? exibida + "…" : exibida)
@@ -253,10 +260,9 @@ public class ProdutoService {
                 .condicao(entity.getCondicao())
                 .localizacao(mapLocalizacao(entity.getLayoutPosicao()))
                 .preListaItemId(entity.getPreListaItemId())
-                .vendidoPorKg(entity.isVendidoPorKg())
-                .precoKgCentavos(entity.isVendidoPorKg() ? entity.getPrecoCentavos() : null)
-                .precoBalancaIndefinido(entity.getCodigoBalanca() != null && !entity.isVendidoPorKg()
-                        && entity.getUnidade() == null && !contexto.formato().internoSemKgEhUnidade())
+                .vendidoPorKg(porKg)
+                .precoKgCentavos(porKg ? entity.getPrecoCentavos() : null)
+                .precoBalancaIndefinido(semUnidade && peloNome == null)
                 .precoConfiavel(motivoSemPreco == null)
                 .motivoSemPreco(motivoSemPreco)
                 .precoConferidoEm(motivoSemPreco == null && contexto.situacao().conferidoEm() != null
@@ -293,7 +299,7 @@ public class ProdutoService {
         dto.setPrecoConfiavel(true);
         dto.setMotivoSemPreco(null);
         dto.setPrecoBalancaIndefinido(false);
-        if (!entity.isVendidoPorKg()) {
+        if (!dto.isVendidoPorKg()) {
             dto.setPrecoKgCentavos(null);
         }
         return dto;
