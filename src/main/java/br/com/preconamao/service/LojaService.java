@@ -115,6 +115,20 @@ public class LojaService {
                 : "Outro agente já está registrado para esta loja (só 1 agente por loja). Para trocar de computador, peça a liberação.";
     }
 
+    // Versão do agente (cabeçalho X-Versao-Agente do sinal de vida, scripts/043). Grava só quando
+    // muda; texto fora do formato "2.5" / "2.5.1" é ignorado.
+    @Transactional
+    public void registrarVersaoAgente(LojaEntity loja, String versao) {
+        if (versao == null || !versao.trim().matches("\\d{1,3}(\\.\\d{1,3}){1,2}")) {
+            return;
+        }
+        LojaEntity atual = entityManager.find(LojaEntity.class, loja.getId());
+        if (!versao.trim().equals(atual.getAgenteVersao())) {
+            atual.setAgenteVersao(versao.trim());
+            atual.setAgenteVersaoEm(OffsetDateTime.now());
+        }
+    }
+
     // Chave do cabeçalho X-Chave-Relatorio (aba administrativa) -> loja. Separada da chave do agente.
     @Transactional
     public Optional<LojaEntity> autenticarRelatorio(String chave) {

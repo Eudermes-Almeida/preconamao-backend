@@ -145,6 +145,13 @@ public class LojaEntity {
     @Column(name = "chave_desativada_em")
     private OffsetDateTime chaveDesativadaEm;
 
+    // Versão informada pelo agente no sinal de vida (scripts/043); null = agente anterior à 2.5.
+    @Column(name = "agente_versao", length = 20)
+    private String agenteVersao;
+
+    @Column(name = "agente_versao_em")
+    private OffsetDateTime agenteVersaoEm;
+
     // Trava de queda de preço (scripts/034): fração dos ativos e queda mínima por produto.
     @Column(name = "queda_preco_limite", nullable = false, precision = 4, scale = 3)
     private BigDecimal quedaPrecoLimite;

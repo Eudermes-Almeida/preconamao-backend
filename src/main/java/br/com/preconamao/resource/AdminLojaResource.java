@@ -20,6 +20,7 @@ import jakarta.ws.rs.Produces;
 import jakarta.ws.rs.QueryParam;
 import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
+import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.eclipse.microprofile.openapi.annotations.Operation;
 import org.eclipse.microprofile.openapi.annotations.tags.Tag;
 
@@ -42,6 +43,9 @@ public class AdminLojaResource {
 
     @Inject
     RelatorioAcessoService acessoService;
+
+    @ConfigProperty(name = "agente.versao-atual")
+    String versaoAtualAgente;
 
     @Inject
     CifraCredenciais cifra;
@@ -112,7 +116,7 @@ public class AdminLojaResource {
     @GET
     @Path("/situacao")
     @Operation(summary = "Situação das lojas e das integrações",
-            description = "Por loja: origem dos preços, agente registrado, último sinal, foto em dia, última carga (e se está retida) e produtos ativos.")
+            description = "Por loja: origem dos preços, agente registrado e sua versão (versaoAntiga = abaixo de agente.versao-atual), último sinal, foto em dia, chave desativada, última carga (e se está retida) e produtos ativos.")
     public Response situacao(@HeaderParam("X-Chave-Relatorio") String chave) {
         if (!geral(chave)) {
             return Response.status(Response.Status.UNAUTHORIZED).entity("Só com a chave geral").build();
@@ -123,7 +127,7 @@ public class AdminLojaResource {
                        l.agente_id IS NOT NULL, l.ultimo_sinal_em, l.limite_sem_sinal_min,
                        l.hash_aplicado IS NOT NULL AND l.hash_informado = l.hash_aplicado,
                        l.hash_divergente_desde, l.alerta_ativo, l.liberar_proxima_carga, l.pedir_completa,
-                       l.ultima_coleta_completa_em, l.chave_desativada_em,
+                       l.ultima_coleta_completa_em, l.chave_desativada_em, l.agente_versao,
                        (SELECT count(*) FROM produtos p WHERE p.loja_id = l.id AND p.ativo),
                        c.id, c.tipo, c.situacao, c.recebida_em, c.mensagem
                   FROM loja l
@@ -149,14 +153,17 @@ public class AdminLojaResource {
             loja.put("completaPedida", l[12]);
             loja.put("ultimaCompletaEm", l[13]);
             loja.put("chaveDesativadaEm", l[14]);
-            loja.put("produtosAtivos", ((Number) l[15]).longValue());
-            if (l[16] != null) {
+            loja.put("agenteVersao", l[15]);
+            // Agente registrado que não informa versão (anterior à 2.5) também é antigo.
+            loja.put("versaoAntiga", (l[15] != null || Boolean.TRUE.equals(l[5])) && compararVersao((String) l[15], versaoAtualAgente) < 0);
+            loja.put("produtosAtivos", ((Number) l[16]).longValue());
+            if (l[17] != null) {
                 Map<String, Object> carga = new LinkedHashMap<>();
-                carga.put("id", ((Number) l[16]).longValue());
-                carga.put("tipo", l[17]);
-                carga.put("situacao", l[18]);
-                carga.put("recebidaEm", l[19]);
-                carga.put("mensagem", l[20]);
+                carga.put("id", ((Number) l[17]).longValue());
+                carga.put("tipo", l[18]);
+                carga.put("situacao", l[19]);
+                carga.put("recebidaEm", l[20]);
+                carga.put("mensagem", l[21]);
                 loja.put("ultimaCarga", carga);
             }
             lojas.add(loja);
@@ -216,6 +223,24 @@ public class AdminLojaResource {
             loja.setAgenteId(null);
             return Response.ok(Map.of("loja", lojaId, "chave", nova)).header("Cache-Control", "no-store").build();
         });
+    }
+
+    // Compara "2.4" com "2.5" ou "2.5.1" número a número; versão vazia = mais antiga que qualquer outra.
+    static int compararVersao(String a, String b) {
+        if (a == null || a.isBlank()) {
+            return (b == null || b.isBlank()) ? 0 : -1;
+        }
+        if (b == null || b.isBlank()) {
+            return 1;
+        }
+        String[] pa = a.trim().split("\\."), pb = b.trim().split("\\.");
+        for (int i = 0; i < Math.max(pa.length, pb.length); i++) {
+            int na = i < pa.length ? Integer.parseInt(pa[i]) : 0, nb = i < pb.length ? Integer.parseInt(pb[i]) : 0;
+            if (na != nb) {
+                return Integer.compare(na, nb);
+            }
+        }
+        return 0;
     }
 
     // "sc-<slug da loja>-" + 32 caracteres sem os que se confundem lidos em voz alta (0/O, 1/l/I).

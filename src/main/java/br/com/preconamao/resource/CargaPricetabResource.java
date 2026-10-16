@@ -40,6 +40,8 @@ public class CargaPricetabResource {
     public static final String CABECALHO_NOME = "X-Nome-Arquivo";
     // Identificação do agente (scripts/034): só 1 agente por loja. Opcional no agente PRICETAB antigo.
     public static final String CABECALHO_AGENTE = "X-Agente-Id";
+    // Versão do agente (scripts/043): o painel mostra e marca "versão antiga". Opcional (agente < 2.5).
+    public static final String CABECALHO_VERSAO = "X-Versao-Agente";
 
     @Inject
     CargaPricetabService cargaService;
@@ -134,12 +136,13 @@ public class CargaPricetabResource {
     })
     @Operation(summary = "Sinal de vida do agente", description = "Enviado a cada poucos minutos com o hash do PRICETAB (ou da foto local, no agente RPInfo). Sem sinal além do limite, o app esconde os preços. enviarArquivo=true pede o reenvio; fazerCompleta=true pede uma coleta completa ao agente RPInfo.")
     public Response registraSinal(@HeaderParam(CABECALHO_CHAVE) String chave, @HeaderParam(CABECALHO_AGENTE) String agenteId,
-                                  SinalDTO sinal) {
+                                  @HeaderParam(CABECALHO_VERSAO) String versaoAgente, SinalDTO sinal) {
         return comLoja(chave, loja -> {
             String recusa = lojaService.conferirAgente(loja, agenteId);
             if (recusa != null) {
                 return Response.status(Response.Status.CONFLICT).entity(recusa).build();
             }
+            lojaService.registrarVersaoAgente(loja, versaoAgente);
             return Response.ok(cargaService.registrarSinal(loja, sinal == null ? null : sinal.getHash())).build();
         });
     }
