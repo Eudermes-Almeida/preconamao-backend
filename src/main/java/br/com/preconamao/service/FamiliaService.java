@@ -47,6 +47,8 @@ public class FamiliaService {
     private static final int MAX_LINHAS_LISTA = 200;
     private static final int MAX_QUANTIDADE = 99;
     private static final int MAX_NOME = 30;
+    // Lembrete da linha: marca + medida ("Três Corações - 1,5 kg"), falado ou digitado no app.
+    private static final int MAX_LEMBRETE = 40;
     // "Listas enviadas" no painel: quanto tempo e quantas quem enviou acompanha.
     private static final int DIAS_LISTAS_ENVIADAS = 7;
     private static final int MAX_LISTAS_ENVIADAS = 10;
@@ -443,7 +445,17 @@ public class FamiliaService {
         if (linhas > MAX_LINHAS_LISTA) {
             throw new FamiliaException(400, "Lista grande demais");
         }
-        return new ConteudoListaDTO(itens, produtos);
+        // Lembrete só de linha que vai na lista; texto curto, no mesmo limite do app.
+        Map<String, String> lembretes = new LinkedHashMap<>();
+        if (conteudo.getLembretes() != null) {
+            conteudo.getLembretes().forEach((chave, lembrete) -> {
+                if ((itens.containsKey(chave) || produtos.containsKey(chave)) && lembrete != null && !lembrete.isBlank()) {
+                    String texto = lembrete.strip();
+                    lembretes.put(chave, texto.substring(0, Math.min(MAX_LEMBRETE, texto.length())));
+                }
+            });
+        }
+        return new ConteudoListaDTO(itens, produtos, lembretes.isEmpty() ? null : lembretes);
     }
 
     private boolean quantidadeValida(Integer quantidade) {

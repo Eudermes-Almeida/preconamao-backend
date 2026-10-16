@@ -11,6 +11,7 @@ import jakarta.persistence.EntityManager;
 import jakarta.transaction.Transactional;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -37,6 +38,10 @@ public class PreListaService {
                         "SELECT DISTINCT pre_lista_item_id FROM produtos WHERE loja_id = :loja AND ativo AND pre_lista_item_id IS NOT NULL")
                 .setParameter("loja", loja.getId())
                 .getResultList()).stream().map(Number::longValue).collect(Collectors.toSet());
+        Map<Long, List<String>> falas = textosPorItem("SELECT item_id, fala FROM pre_lista_fala ORDER BY item_id, fala");
+        // Termo com curinga (LEITE % DESNATADO) não é um jeito de falar: fica de fora.
+        Map<Long, List<String>> termos = textosPorItem(
+                "SELECT item_id, lower(termo) FROM pre_lista_termo WHERE strpos(termo, '%') = 0 ORDER BY item_id, termo");
 
         Map<Long, PreListaCategoriaDTO> categorias = new LinkedHashMap<>();
         for (PreListaItemEntity item : itens) {
@@ -48,9 +53,22 @@ public class PreListaService {
                             .build())
                     .getItens()
                     .add(PreListaItemDTO.builder().id(item.getId()).nome(item.getNome())
-                            .disponivel(naLoja.contains(item.getId())).build());
+                            .disponivel(naLoja.contains(item.getId()))
+                            .falas(falas.getOrDefault(item.getId(), List.of()))
+                            .termos(termos.getOrDefault(item.getId(), List.of()))
+                            .build());
         }
 
         return new ArrayList<>(categorias.values());
+    }
+
+    // (item_id, texto) -> textos de cada item, na ordem da consulta.
+    @SuppressWarnings("unchecked")
+    private Map<Long, List<String>> textosPorItem(String sql) {
+        Map<Long, List<String>> porItem = new HashMap<>();
+        for (Object[] linha : (List<Object[]>) entityManager.createNativeQuery(sql).getResultList()) {
+            porItem.computeIfAbsent(((Number) linha[0]).longValue(), id -> new ArrayList<>()).add((String) linha[1]);
+        }
+        return porItem;
     }
 }
