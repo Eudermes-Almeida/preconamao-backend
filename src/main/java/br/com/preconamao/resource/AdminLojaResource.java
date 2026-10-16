@@ -2,6 +2,7 @@ package br.com.preconamao.resource;
 
 import br.com.preconamao.entity.CredencialApiEntity;
 import br.com.preconamao.entity.LojaEntity;
+import br.com.preconamao.service.AlertaService;
 import br.com.preconamao.service.CifraCredenciais;
 import br.com.preconamao.service.ColetaApiService;
 import br.com.preconamao.service.LojaService;
@@ -46,6 +47,29 @@ public class AdminLojaResource {
 
     @ConfigProperty(name = "agente.versao-atual")
     String versaoAtualAgente;
+
+    @Inject
+    AlertaService alertaService;
+
+    @ConfigProperty(name = "alerta.email-destino")
+    Optional<String> emailAlerta;
+
+    @POST
+    @Path("/alerta-teste")
+    @Operation(summary = "Envia um e-mail de teste do alerta",
+            description = "situacao: ENVIADO, SIMULADO (MAILER_MOCK=true: só vai para o log) ou SEM_DESTINO (falta ALERTA_EMAIL); ERRO com a mensagem do servidor de e-mail.")
+    public Response alertaTeste(@HeaderParam("X-Chave-Relatorio") String chave) {
+        if (!geral(chave)) {
+            return Response.status(Response.Status.UNAUTHORIZED).entity("Só com a chave geral").build();
+        }
+        String destino = emailAlerta.filter(e -> !e.isBlank()).orElse("");
+        try {
+            return Response.ok(Map.of("situacao", alertaService.enviarTeste(), "destino", destino)).build();
+        } catch (Exception e) {
+            return Response.ok(Map.of("situacao", "ERRO", "destino", destino,
+                    "mensagem", String.valueOf(e.getMessage()))).build();
+        }
+    }
 
     @Inject
     CifraCredenciais cifra;
@@ -127,7 +151,7 @@ public class AdminLojaResource {
                        l.agente_id IS NOT NULL, l.ultimo_sinal_em, l.limite_sem_sinal_min,
                        l.hash_aplicado IS NOT NULL AND l.hash_informado = l.hash_aplicado,
                        l.hash_divergente_desde, l.alerta_ativo, l.liberar_proxima_carga, l.pedir_completa,
-                       l.ultima_coleta_completa_em, l.chave_desativada_em, l.agente_versao,
+                       l.ultima_coleta_completa_em, l.chave_desativada_em, l.agente_versao, l.exige_localizacao,
                        (SELECT count(*) FROM produtos p WHERE p.loja_id = l.id AND p.ativo),
                        c.id, c.tipo, c.situacao, c.recebida_em, c.mensagem
                   FROM loja l
@@ -156,14 +180,15 @@ public class AdminLojaResource {
             loja.put("agenteVersao", l[15]);
             // Agente registrado que não informa versão (anterior à 2.5) também é antigo.
             loja.put("versaoAntiga", (l[15] != null || Boolean.TRUE.equals(l[5])) && compararVersao((String) l[15], versaoAtualAgente) < 0);
-            loja.put("produtosAtivos", ((Number) l[16]).longValue());
-            if (l[17] != null) {
+            loja.put("exigeLocalizacao", l[16]);
+            loja.put("produtosAtivos", ((Number) l[17]).longValue());
+            if (l[18] != null) {
                 Map<String, Object> carga = new LinkedHashMap<>();
-                carga.put("id", ((Number) l[17]).longValue());
-                carga.put("tipo", l[18]);
-                carga.put("situacao", l[19]);
-                carga.put("recebidaEm", l[20]);
-                carga.put("mensagem", l[21]);
+                carga.put("id", ((Number) l[18]).longValue());
+                carga.put("tipo", l[19]);
+                carga.put("situacao", l[20]);
+                carga.put("recebidaEm", l[21]);
+                carga.put("mensagem", l[22]);
                 loja.put("ultimaCarga", carga);
             }
             lojas.add(loja);
@@ -189,6 +214,15 @@ public class AdminLojaResource {
             description = "Só 1 agente por loja: o próximo agente que se identificar passa a ser o registrado.")
     public Response liberarAgente(@HeaderParam("X-Chave-Relatorio") String chave, @PathParam("id") Integer lojaId) {
         return marcarLoja(chave, lojaId, loja -> loja.setAgenteId(null), "agenteLiberado");
+    }
+
+    @POST
+    @Path("/{id}/exigir-localizacao")
+    @Operation(summary = "Liga ou desliga a trava de localização da loja",
+            description = "valor=true: o app só mostra os preços da loja a quem leu o QR code dela ou está dentro do raio. valor=false: preços abertos em qualquer lugar (loja de demonstração).")
+    public Response exigirLocalizacao(@HeaderParam("X-Chave-Relatorio") String chave, @PathParam("id") Integer lojaId,
+                                      @QueryParam("valor") boolean valor) {
+        return marcarLoja(chave, lojaId, loja -> loja.setExigeLocalizacao(valor), "exigeLocalizacao");
     }
 
     @POST

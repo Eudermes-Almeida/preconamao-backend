@@ -41,6 +41,25 @@ public class AlertaService {
     @Inject
     Mailer mailer;
 
+    // quarkus.mailer.mock=true (padrão, MAILER_MOCK): o e-mail só vai para o log, não é enviado.
+    @ConfigProperty(name = "quarkus.mailer.mock", defaultValue = "true")
+    boolean mailerSimulado;
+
+    // Botão "Testar alerta por e-mail" do painel: confere a configuração sem precisar ligar a
+    // proteção de nenhuma loja (o alerta automático só vigia lojas com limite de sinal definido).
+    public String enviarTeste() {
+        if (emailDestino.isEmpty() || emailDestino.get().isBlank()) {
+            return "SEM_DESTINO";
+        }
+        if (mailerSimulado) {
+            return "SIMULADO";
+        }
+        mailer.send(Mail.withText(emailDestino.get(), "[Simplifica Compras] Teste do alerta por e-mail",
+                "Este é um teste do alerta por e-mail do Simplifica Compras, pedido no painel em " + OffsetDateTime.now()
+                        + ".\n\nSe você recebeu esta mensagem, os avisos de loja sem sinal e de carga retida vão chegar aqui."));
+        return "ENVIADO";
+    }
+
     @Scheduled(every = "1m", delayed = "30s", concurrentExecution = Scheduled.ConcurrentExecution.SKIP)
     @Transactional
     void verificarLojas() {

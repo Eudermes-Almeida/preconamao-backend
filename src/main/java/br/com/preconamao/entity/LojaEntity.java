@@ -152,6 +152,11 @@ public class LojaEntity {
     @Column(name = "agente_versao_em")
     private OffsetDateTime agenteVersaoEm;
 
+    // Trava de localização decidida pela loja (scripts/044): o app só mostra os preços dela a quem
+    // leu o QR code ou está dentro do raio.
+    @Column(name = "exige_localizacao", nullable = false)
+    private boolean exigeLocalizacao;
+
     // Trava de queda de preço (scripts/034): fração dos ativos e queda mínima por produto.
     @Column(name = "queda_preco_limite", nullable = false, precision = 4, scale = 3)
     private BigDecimal quedaPrecoLimite;

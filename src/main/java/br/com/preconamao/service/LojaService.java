@@ -206,6 +206,7 @@ public class LojaService {
                         .raioSaidaM(Math.max(l.getRaioM(), l.getRaioSaidaM() != null ? l.getRaioSaidaM() : RAIO_SAIDA_PADRAO_M))
                         .origem(l.getTipoOrigem())
                         .formato(Optional.ofNullable(formato(l)).map(FormatoOrigemEntity::getNome).orElse(null))
+                        .exigeLocalizacao(l.isExigeLocalizacao())
                         .build())
                 .toList();
     }

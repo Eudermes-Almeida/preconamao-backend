@@ -34,4 +34,8 @@ public class LojaPublicaDTO {
 
     private String formato;
 
+    // A loja exige localização (scripts/044): sem QR code nem posição dentro do raio, o app não
+    // mostra os preços dela.
+    private boolean exigeLocalizacao;
+
 }
