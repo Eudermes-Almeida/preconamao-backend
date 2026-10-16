@@ -38,7 +38,9 @@ public class PreListaService {
                         "SELECT DISTINCT pre_lista_item_id FROM produtos WHERE loja_id = :loja AND ativo AND pre_lista_item_id IS NOT NULL")
                 .setParameter("loja", loja.getId())
                 .getResultList()).stream().map(Number::longValue).collect(Collectors.toSet());
-        Map<Long, List<String>> falas = textosPorItem("SELECT item_id, fala FROM pre_lista_fala ORDER BY item_id, fala");
+        Map<Long, List<String>> falas = textosPorItem("SELECT item_id, fala FROM pre_lista_fala WHERE NOT marca ORDER BY item_id, fala");
+        // Marca falada ("coca cola" -> Refrigerante): o app também a guarda no lembrete da linha.
+        Map<Long, List<String>> marcas = textosPorItem("SELECT item_id, fala FROM pre_lista_fala WHERE marca ORDER BY item_id, fala");
         // Termo com curinga (LEITE % DESNATADO) não é um jeito de falar: fica de fora.
         Map<Long, List<String>> termos = textosPorItem(
                 "SELECT item_id, lower(termo) FROM pre_lista_termo WHERE strpos(termo, '%') = 0 ORDER BY item_id, termo");
@@ -55,6 +57,7 @@ public class PreListaService {
                     .add(PreListaItemDTO.builder().id(item.getId()).nome(item.getNome())
                             .disponivel(naLoja.contains(item.getId()))
                             .falas(falas.getOrDefault(item.getId(), List.of()))
+                            .marcas(marcas.getOrDefault(item.getId(), List.of()))
                             .termos(termos.getOrDefault(item.getId(), List.of()))
                             .build());
         }

@@ -25,6 +25,10 @@ public class PreListaItemDTO {
     // nome, as falas e os termos; fala vence termo quando os dois casam igual.
     private List<String> falas;
 
+    // Marcas faladas do item (pre_lista_fala.marca, script 041): casam como as falas e o app
+    // guarda a marca no lembrete ("Coca Cola - 2 L").
+    private List<String> marcas;
+
     private List<String> termos;
 
 }
