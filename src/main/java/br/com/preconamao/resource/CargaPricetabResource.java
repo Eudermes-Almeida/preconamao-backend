@@ -178,6 +178,10 @@ public class CargaPricetabResource {
             if (loja.isEmpty()) {
                 return Response.status(Response.Status.UNAUTHORIZED).entity("Chave da loja ausente ou inválida").build();
             }
+            if (loja.get().getChaveDesativadaEm() != null) {
+                return Response.status(Response.Status.UNAUTHORIZED)
+                        .entity("Chave da loja desativada no painel. Fale com a Simplifica Compras para receber uma chave nova.").build();
+            }
             return acao.apply(loja.get());
         } catch (Exception e) {
             return Response.status(Response.Status.INTERNAL_SERVER_ERROR)

@@ -4,6 +4,7 @@ import br.com.preconamao.entity.CredencialApiEntity;
 import br.com.preconamao.entity.LojaEntity;
 import br.com.preconamao.service.CifraCredenciais;
 import br.com.preconamao.service.ColetaApiService;
+import br.com.preconamao.service.LojaService;
 import br.com.preconamao.service.RelatorioAcessoService;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import jakarta.inject.Inject;
@@ -22,6 +23,8 @@ import jakarta.ws.rs.core.Response;
 import org.eclipse.microprofile.openapi.annotations.Operation;
 import org.eclipse.microprofile.openapi.annotations.tags.Tag;
 
+import java.nio.charset.StandardCharsets;
+import java.security.SecureRandom;
 import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -30,8 +33,8 @@ import java.util.Map;
 import java.util.Optional;
 
 // Operações de quem opera o sistema sobre uma loja. Só com a chave GERAL (X-Chave-Relatorio).
-// Por enquanto: cadastrar a credencial da API da loja (cifrada; nunca devolvida) e pedir uma
-// coleta agora (laboratório). O cadastro de lojas continua por script SQL (regra 27).
+// Por enquanto: cadastrar a credencial da API da loja (cifrada; nunca devolvida), pedir uma
+// coleta agora (laboratório), liberar carga/agente e desativar ou trocar a chave do agente. O cadastro de lojas continua por script SQL (regra 27).
 @Path("/admin/lojas")
 @Produces(MediaType.APPLICATION_JSON)
 @Tag(name = "Administração de lojas", description = "Só com a chave geral")
@@ -120,7 +123,7 @@ public class AdminLojaResource {
                        l.agente_id IS NOT NULL, l.ultimo_sinal_em, l.limite_sem_sinal_min,
                        l.hash_aplicado IS NOT NULL AND l.hash_informado = l.hash_aplicado,
                        l.hash_divergente_desde, l.alerta_ativo, l.liberar_proxima_carga, l.pedir_completa,
-                       l.ultima_coleta_completa_em,
+                       l.ultima_coleta_completa_em, l.chave_desativada_em,
                        (SELECT count(*) FROM produtos p WHERE p.loja_id = l.id AND p.ativo),
                        c.id, c.tipo, c.situacao, c.recebida_em, c.mensagem
                   FROM loja l
@@ -145,14 +148,15 @@ public class AdminLojaResource {
             loja.put("cargaLiberada", l[11]);
             loja.put("completaPedida", l[12]);
             loja.put("ultimaCompletaEm", l[13]);
-            loja.put("produtosAtivos", ((Number) l[14]).longValue());
-            if (l[15] != null) {
+            loja.put("chaveDesativadaEm", l[14]);
+            loja.put("produtosAtivos", ((Number) l[15]).longValue());
+            if (l[16] != null) {
                 Map<String, Object> carga = new LinkedHashMap<>();
-                carga.put("id", ((Number) l[15]).longValue());
-                carga.put("tipo", l[16]);
-                carga.put("situacao", l[17]);
-                carga.put("recebidaEm", l[18]);
-                carga.put("mensagem", l[19]);
+                carga.put("id", ((Number) l[16]).longValue());
+                carga.put("tipo", l[17]);
+                carga.put("situacao", l[18]);
+                carga.put("recebidaEm", l[19]);
+                carga.put("mensagem", l[20]);
                 loja.put("ultimaCarga", carga);
             }
             lojas.add(loja);
@@ -178,6 +182,52 @@ public class AdminLojaResource {
             description = "Só 1 agente por loja: o próximo agente que se identificar passa a ser o registrado.")
     public Response liberarAgente(@HeaderParam("X-Chave-Relatorio") String chave, @PathParam("id") Integer lojaId) {
         return marcarLoja(chave, lojaId, loja -> loja.setAgenteId(null), "agenteLiberado");
+    }
+
+    @POST
+    @Path("/{id}/desativar-chave")
+    @Operation(summary = "Desativa a chave do agente da loja",
+            description = "Na hora: todos os envios do agente (preços, sinal de vida, situação) passam a receber 401. A loja continua no app com os últimos preços. Para voltar, gere uma chave nova.")
+    public Response desativarChave(@HeaderParam("X-Chave-Relatorio") String chave, @PathParam("id") Integer lojaId) {
+        return marcarLoja(chave, lojaId, loja -> {
+            if (loja.getChaveDesativadaEm() == null) {
+                loja.setChaveDesativadaEm(OffsetDateTime.now());
+            }
+        }, "chaveDesativada");
+    }
+
+    @POST
+    @Path("/{id}/gerar-chave")
+    @Operation(summary = "Gera uma chave nova para o agente da loja",
+            description = "A chave antiga deixa de valer, a desativação é desfeita e o registro do agente é liberado. A chave nova vem só nesta resposta (o servidor guarda o SHA-256).")
+    public Response gerarChave(@HeaderParam("X-Chave-Relatorio") String chave, @PathParam("id") Integer lojaId) {
+        if (!geral(chave)) {
+            return Response.status(Response.Status.UNAUTHORIZED).entity("Só com a chave geral").build();
+        }
+        return QuarkusTransaction.requiringNew().call(() -> {
+            LojaEntity loja = entityManager.find(LojaEntity.class, lojaId);
+            if (loja == null) {
+                return Response.status(Response.Status.NOT_FOUND).entity("Loja não encontrada").build();
+            }
+            String nova = novaChave(loja);
+            loja.setChaveHash(LojaService.sha256(nova.getBytes(StandardCharsets.UTF_8)));
+            loja.setChaveDesativadaEm(null);
+            // A TI reconfigura o agente com a chave nova; o 1º agente que se identificar fica registrado.
+            loja.setAgenteId(null);
+            return Response.ok(Map.of("loja", lojaId, "chave", nova)).header("Cache-Control", "no-store").build();
+        });
+    }
+
+    // "sc-<slug da loja>-" + 32 caracteres sem os que se confundem lidos em voz alta (0/O, 1/l/I).
+    private static final String ALFABETO_CHAVE = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789";
+    private static final SecureRandom ALEATORIO = new SecureRandom();
+
+    private static String novaChave(LojaEntity loja) {
+        StringBuilder chave = new StringBuilder("sc-").append(loja.getSlug() != null ? loja.getSlug() : "loja" + loja.getId()).append('-');
+        for (int i = 0; i < 32; i++) {
+            chave.append(ALFABETO_CHAVE.charAt(ALEATORIO.nextInt(ALFABETO_CHAVE.length())));
+        }
+        return chave.toString();
     }
 
     private Response marcarLoja(String chave, Integer lojaId, java.util.function.Consumer<LojaEntity> marcacao, String campo) {

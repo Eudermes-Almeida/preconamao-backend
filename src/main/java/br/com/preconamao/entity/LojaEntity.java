@@ -140,6 +140,11 @@ public class LojaEntity {
     @Column(name = "agente_id", length = 80)
     private String agenteId;
 
+    // Chave do agente desativada no painel (scripts/042): o servidor recusa todos os envios do
+    // agente até que uma chave nova seja gerada. null = chave válida.
+    @Column(name = "chave_desativada_em")
+    private OffsetDateTime chaveDesativadaEm;
+
     // Trava de queda de preço (scripts/034): fração dos ativos e queda mínima por produto.
     @Column(name = "queda_preco_limite", nullable = false, precision = 4, scale = 3)
     private BigDecimal quedaPrecoLimite;
